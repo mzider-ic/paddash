@@ -220,6 +220,7 @@ final class HomeKitManager: NSObject, ObservableObject {
             if let brightness = light.brightnessCharacteristic?.value as? Int {
                 availableLights[index].brightness = brightness
             }
+            availableLights[index].isStale = false
         }
         updateWidgetState(for: light)
     }
@@ -241,13 +242,15 @@ final class HomeKitManager: NSObject, ObservableObject {
                             brightness: widgets[index].light.brightness,
                             categoryType: widget.light.categoryType,
                             isGroup: widget.light.isGroup,
-                            groupServices: widget.light.groupServices
+                            groupServices: widget.light.groupServices,
+                            isStale: false
                         )
                     )
                 }
                 if let brightness = light.brightnessCharacteristic?.value as? Int {
                     var updatedLight = widgets[index].light
                     updatedLight.brightness = brightness
+                    updatedLight.isStale = false
                     widgets[index] = HomeKitWidget(
                         id: widget.id,
                         type: widget.type,
@@ -334,3 +337,4 @@ final class HomeKitManager: NSObject, ObservableObject {
         commitBrightness(for: light, value: value)
     }
 }
+

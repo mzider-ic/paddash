@@ -36,6 +36,7 @@ extension HomeKitManager: HMAccessoryDelegate {
                    let value = characteristic.value as? Int {
                     availableLights[index].brightness = value
                 }
+                availableLights[index].isStale = false
                 updateWidgetState(for: availableLights[index])
             }
         }

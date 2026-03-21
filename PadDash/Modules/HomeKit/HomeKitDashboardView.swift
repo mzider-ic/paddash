@@ -246,13 +246,12 @@ struct LightDimmerCard: View {
                     }
                 }
 
-                // Dimmer bar + brightness label
-                HStack(alignment: .center, spacing: DS.Space.md) {
-                    Spacer()
-
+                // Dimmer bar + brightness label below
+                VStack(spacing: DS.Space.sm) {
                     DimmerBar(
                         brightness: light.brightness,
                         isOn: light.isOn,
+                        isStale: light.isStale,
                         onBrightnessDragged: { newValue in
                             manager.setBrightnessLocally(for: light, value: newValue)
                         },
@@ -261,23 +260,20 @@ struct LightDimmerCard: View {
                         }
                     )
 
-                    // Brightness label to the right
-                    VStack(spacing: 2) {
-                        Text(light.isOn ? "\(light.brightness)" : "—")
-                            .font(.system(size: 36, weight: .light, design: .rounded))
+                    // Brightness label below
+                    VStack(spacing: 0) {
+                        Text(light.isOn ? "\(light.brightness)%" : "—")
+                            .font(.system(size: 28, weight: .light, design: .rounded))
                             .monospacedDigit()
                             .foregroundColor(
                                 light.isOn ? DS.Color.accentAmber : DS.Color.textTertiary
                             )
-                        Text(light.isOn ? "%" : "Off")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                        Text(light.isOn ? "" : "Off")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
                             .foregroundColor(
                                 light.isOn ? DS.Color.accentAmber.opacity(0.6) : DS.Color.textTertiary
                             )
                     }
-                    .frame(width: 60)
-
-                    Spacer()
                 }
             }
         }
@@ -289,11 +285,13 @@ struct LightDimmerCard: View {
 struct DimmerBar: View {
     var brightness: Int
     var isOn: Bool
+    var isStale: Bool
     var onBrightnessDragged: (Int) -> Void
     var onBrightnessCommitted: (Int) -> Void
 
     @State private var isDragging = false
     @State private var dragBrightness: Int = 0
+    @State private var shimmerPhase: CGFloat = 0
 
     private let barWidth: CGFloat = 64
     private let barHeight: CGFloat = 200
@@ -316,41 +314,67 @@ struct DimmerBar: View {
                             .stroke(DS.Color.border, lineWidth: 1)
                     )
 
-                // Fill with gradient (bright at top, dark at bottom)
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: isOn
-                                ? [accent, accent.opacity(0.25)]
-                                : [DS.Color.textTertiary.opacity(0.3), DS.Color.textTertiary.opacity(0.1)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(height: fillHeight)
-                    .animation(isDragging ? nil : DS.Animation.smooth, value: progress)
-
-                // Glow overlay when on
-                if isOn && displayBrightness > 0 {
+                if isStale {
+                    // Shimmer loading state
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(accent.opacity(0.15 * progress))
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    DS.Color.textTertiary.opacity(0.05),
+                                    DS.Color.textTertiary.opacity(0.15),
+                                    DS.Color.textTertiary.opacity(0.05),
+                                ],
+                                startPoint: UnitPoint(x: 0.5, y: shimmerPhase - 0.3),
+                                endPoint: UnitPoint(x: 0.5, y: shimmerPhase + 0.3)
+                            )
+                        )
+                        .onAppear {
+                            withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                                shimmerPhase = 1.3
+                            }
+                        }
+                } else {
+                    // Fill with gradient (bright at top, dark at bottom)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: isOn
+                                    ? [accent, accent.opacity(0.25)]
+                                    : [DS.Color.textTertiary.opacity(0.3), DS.Color.textTertiary.opacity(0.1)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                         .frame(height: fillHeight)
-                        .blur(radius: 8)
                         .animation(isDragging ? nil : DS.Animation.smooth, value: progress)
+
+                    // Glow overlay when on
+                    if isOn && displayBrightness > 0 {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(accent.opacity(0.15 * progress))
+                            .frame(height: fillHeight)
+                            .blur(radius: 8)
+                            .animation(isDragging ? nil : DS.Animation.smooth, value: progress)
+                    }
                 }
 
                 // Lightbulb icon centered
                 VStack {
                     Spacer()
-                    Image(systemName: isOn ? "lightbulb.fill" : "lightbulb")
-                        .font(.system(size: 24, weight: .thin))
-                        .foregroundColor(
-                            isOn ? accent.opacity(0.5 + 0.5 * progress) : DS.Color.textTertiary
-                        )
-                        .shadow(
-                            color: isOn ? accent.opacity(0.3 * progress) : .clear,
-                            radius: 8
-                        )
+                    if isStale {
+                        ProgressView()
+                            .tint(DS.Color.textTertiary)
+                    } else {
+                        Image(systemName: isOn ? "lightbulb.fill" : "lightbulb")
+                            .font(.system(size: 24, weight: .thin))
+                            .foregroundColor(
+                                isOn ? accent.opacity(0.5 + 0.5 * progress) : DS.Color.textTertiary
+                            )
+                            .shadow(
+                                color: isOn ? accent.opacity(0.3 * progress) : .clear,
+                                radius: 8
+                            )
+                    }
                     Spacer()
                 }
             }
@@ -359,7 +383,7 @@ struct DimmerBar: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        guard isOn else { return }
+                        guard isOn, !isStale else { return }
                         isDragging = true
                         let fraction = 1.0 - (value.location.y / height)
                         let clamped = min(1.0, max(0.01, fraction))

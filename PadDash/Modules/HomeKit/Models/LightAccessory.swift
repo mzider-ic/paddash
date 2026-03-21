@@ -14,6 +14,7 @@ struct LightAccessory: Identifiable {
     var categoryType: String  // HMAccessoryCategoryType for icon mapping
     var isGroup: Bool = false
     var groupServices: [HMService] = []  // All services in a group (empty for individual lights)
+    var isStale: Bool = true  // True until the first readValue callback completes
 
     var powerCharacteristic: HMCharacteristic? {
         service.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState }
