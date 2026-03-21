@@ -1,9 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - HomeKit Dashboard View
 
 struct HomeKitDashboardView: View {
     @ObservedObject var manager: HomeKitManager
+    @State private var draggedWidget: HomeKitWidget?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,7 @@ struct HomeKitDashboardView: View {
             Group {
                 if manager.isLoading {
                     loadingView
-                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty {
+                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty && manager.availableThermostats.isEmpty {
                     if let message = manager.statusMessage {
                         emptyStateView(message: message)
                     } else {
@@ -35,6 +37,16 @@ struct HomeKitDashboardView: View {
         }
         .sheet(isPresented: $manager.showAccessoryPicker) {
             AccessoryPickerSheet(manager: manager)
+        }
+        .alert("Rename Widget", isPresented: Binding(
+            get: { manager.widgetBeingRenamed != nil },
+            set: { if !$0 { manager.cancelRename() } }
+        )) {
+            TextField("Widget name", text: $manager.renameText)
+            Button("Save") { manager.commitRename() }
+            Button("Cancel", role: .cancel) { manager.cancelRename() }
+        } message: {
+            Text("Enter a custom name for this widget.")
         }
     }
 
@@ -115,7 +127,6 @@ struct HomeKitDashboardView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, DS.Space.xl)
 
-            // Add widget button in empty state
             Button {
                 manager.beginAddWidget()
             } label: {
@@ -151,12 +162,32 @@ struct HomeKitDashboardView: View {
                 spacing: DS.Space.md
             ) {
                 ForEach(manager.widgets) { widget in
-                    LightDimmerCard(
-                        light: widget.light,
-                        manager: manager,
-                        onRemove: { manager.removeWidget(widget) }
-                    )
-                    .aspectRatio(0.85, contentMode: .fit)
+                    widgetCard(for: widget)
+                        .aspectRatio(0.85, contentMode: .fit)
+                        .opacity(draggedWidget?.id == widget.id ? 0.4 : 1.0)
+                        .onDrag {
+                            draggedWidget = widget
+                            return NSItemProvider(object: widget.id.uuidString as NSString)
+                        }
+                        .onDrop(of: [.text], delegate: WidgetDropDelegate(
+                            widget: widget,
+                            manager: manager,
+                            draggedWidget: $draggedWidget
+                        ))
+                        .contextMenu {
+                            Button {
+                                manager.beginRename(widget)
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                withAnimation(DS.Animation.snappy) {
+                                    manager.removeWidget(widget)
+                                }
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
                 }
 
                 // Add widget button
@@ -182,14 +213,40 @@ struct HomeKitDashboardView: View {
             .padding(.bottom, 100)
         }
     }
+
+    @ViewBuilder
+    private func widgetCard(for widget: HomeKitWidget) -> some View {
+        switch widget.type {
+        case .lightDimmer:
+            LightDimmerCard(
+                widget: widget,
+                manager: manager,
+                onRemove: { manager.removeWidget(widget) }
+            )
+        case .thermostat:
+            ThermostatCard(
+                widget: widget,
+                manager: manager,
+                onRemove: { manager.removeWidget(widget) }
+            )
+        case .humidity:
+            HumidityCard(
+                widget: widget,
+                manager: manager,
+                onRemove: { manager.removeWidget(widget) }
+            )
+        }
+    }
 }
 
 // MARK: - Light Dimmer Card
 
 struct LightDimmerCard: View {
-    let light: LightAccessory
+    let widget: HomeKitWidget
     @ObservedObject var manager: HomeKitManager
     var onRemove: (() -> Void)?
+
+    private var light: LightAccessory { widget.light }
 
     var body: some View {
         DashCard {
@@ -198,7 +255,7 @@ struct LightDimmerCard: View {
                 // Header: name + room + controls
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(light.name)
+                        Text(widget.displayName)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
                             .foregroundColor(DS.Color.textSecondary)
                             .lineLimit(1)
@@ -232,7 +289,6 @@ struct LightDimmerCard: View {
                             } else {
                                 manager.togglePower(for: light)
                             }
-                            
                         }
                     } label: {
                         Image(systemName: "power")
@@ -273,6 +329,238 @@ struct LightDimmerCard: View {
                             .foregroundColor(
                                 light.isOn ? DS.Color.accentAmber.opacity(0.6) : DS.Color.textTertiary
                             )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Thermostat Card
+
+struct ThermostatCard: View {
+    let widget: HomeKitWidget
+    @ObservedObject var manager: HomeKitManager
+    var onRemove: (() -> Void)?
+
+    private var thermostat: ThermostatAccessory? { widget.thermostat }
+
+    var body: some View {
+        DashCard {
+            VStack(spacing: DS.Space.sm) {
+
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(widget.displayName)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundColor(DS.Color.textSecondary)
+                            .lineLimit(1)
+                        Text(thermostat?.roomName ?? "")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(DS.Color.textTertiary)
+                    }
+                    Spacer()
+
+                    if let onRemove {
+                        Button {
+                            withAnimation(DS.Animation.snappy) { onRemove() }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(DS.Color.textTertiary)
+                                .padding(6)
+                                .background(DS.Color.surfaceRaised)
+                                .clipShape(Circle())
+                        }
+                    }
+                }
+
+                if let thermo = thermostat {
+                    if thermo.isStale {
+                        Spacer()
+                        ProgressView()
+                            .tint(DS.Color.accentBlue)
+                        Spacer()
+                    } else {
+                        // Current temperature (large)
+                        VStack(spacing: 2) {
+                            Text(thermo.displayCurrentTemp() + "°")
+                                .font(.system(size: 48, weight: .ultraLight, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundColor(thermo.currentMode.accent)
+
+                            Text(thermo.currentMode == .off ? "Off" : thermo.currentMode.displayName)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(thermo.currentMode.accent)
+                        }
+
+                        Spacer()
+
+                        // Target temperature + mode controls
+                        HStack(spacing: DS.Space.sm) {
+                            // Decrease target
+                            Button {
+                                let newTarget = thermo.targetTemperature - 0.5
+                                manager.setTargetTemperature(for: thermo, celsius: newTarget)
+                            } label: {
+                                Image(systemName: "minus")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(DS.Color.textSecondary)
+                                    .frame(width: 32, height: 32)
+                                    .background(DS.Color.surfaceRaised)
+                                    .clipShape(Circle())
+                            }
+
+                            // Target label
+                            VStack(spacing: 0) {
+                                Text(thermo.displayTargetTemp() + "°")
+                                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundColor(DS.Color.textPrimary)
+                                Text("Target")
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .foregroundColor(DS.Color.textTertiary)
+                            }
+                            .frame(minWidth: 50)
+
+                            // Increase target
+                            Button {
+                                let newTarget = thermo.targetTemperature + 0.5
+                                manager.setTargetTemperature(for: thermo, celsius: newTarget)
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(DS.Color.textSecondary)
+                                    .frame(width: 32, height: 32)
+                                    .background(DS.Color.surfaceRaised)
+                                    .clipShape(Circle())
+                            }
+                        }
+
+                        // Mode buttons
+                        HStack(spacing: DS.Space.xs) {
+                            ForEach([ThermostatMode.off, .heat, .cool, .auto], id: \.rawValue) { mode in
+                                Button {
+                                    manager.setTargetMode(for: thermo, mode: mode)
+                                } label: {
+                                    Image(systemName: mode.icon)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(thermo.targetMode == mode ? mode.accent : DS.Color.textTertiary)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            thermo.targetMode == mode
+                                            ? mode.accent.opacity(0.15)
+                                            : DS.Color.surfaceRaised
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Spacer()
+                    Text("No thermostat")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(DS.Color.textTertiary)
+                    Spacer()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Humidity Card
+
+struct HumidityCard: View {
+    let widget: HomeKitWidget
+    @ObservedObject var manager: HomeKitManager
+    var onRemove: (() -> Void)?
+
+    var body: some View {
+        DashCard {
+            VStack(alignment: .leading, spacing: DS.Space.sm) {
+
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(widget.displayName)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundColor(DS.Color.textSecondary)
+                            .lineLimit(1)
+                        Text("All Sensors")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(DS.Color.textTertiary)
+                    }
+                    Spacer()
+
+                    if let onRemove {
+                        Button {
+                            withAnimation(DS.Animation.snappy) { onRemove() }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(DS.Color.textTertiary)
+                                .padding(6)
+                                .background(DS.Color.surfaceRaised)
+                                .clipShape(Circle())
+                        }
+                    }
+                }
+
+                if manager.availableHumiditySensors.isEmpty {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 6) {
+                            Image(systemName: "humidity")
+                                .font(.system(size: 28, weight: .thin))
+                                .foregroundColor(DS.Color.textTertiary)
+                            Text("No sensors")
+                                .font(.system(size: 12, design: .rounded))
+                                .foregroundColor(DS.Color.textTertiary)
+                        }
+                        Spacer()
+                    }
+                    Spacer()
+                } else {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: DS.Space.xs) {
+                            ForEach(manager.humiditySensorsGroupedByRoom, id: \.room) { group in
+                                // Room header
+                                Text(group.room.uppercased())
+                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .foregroundColor(DS.Color.textTertiary)
+                                    .padding(.top, 2)
+
+                                ForEach(group.sensors) { sensor in
+                                    HStack(spacing: DS.Space.xs) {
+                                        Image(systemName: "humidity.fill")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(DS.Color.accentMint)
+
+                                        Text(sensor.name)
+                                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                                            .foregroundColor(DS.Color.textSecondary)
+                                            .lineLimit(1)
+
+                                        Spacer()
+
+                                        if sensor.isStale {
+                                            ProgressView()
+                                                .scaleEffect(0.6)
+                                                .tint(DS.Color.textTertiary)
+                                        } else {
+                                            Text(sensor.displayHumidity + "%")
+                                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                .monospacedDigit()
+                                                .foregroundColor(DS.Color.accentMint)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -403,6 +691,36 @@ struct DimmerBar: View {
     }
 }
 
+// MARK: - Widget Drop Delegate
+
+struct WidgetDropDelegate: DropDelegate {
+    let widget: HomeKitWidget
+    let manager: HomeKitManager
+    @Binding var draggedWidget: HomeKitWidget?
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedWidget = nil
+        manager.saveState()
+        return true
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged = draggedWidget,
+              dragged.id != widget.id,
+              let fromIndex = manager.widgets.firstIndex(where: { $0.id == dragged.id }),
+              let toIndex = manager.widgets.firstIndex(where: { $0.id == widget.id })
+        else { return }
+
+        withAnimation(DS.Animation.snappy) {
+            manager.widgets.move(fromOffsets: IndexSet(integer: fromIndex), toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+}
+
 // MARK: - Widget Type Picker Sheet
 
 struct WidgetTypePickerSheet: View {
@@ -481,7 +799,12 @@ struct AccessoryPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
-    private var filteredGroups: [(room: String, lights: [LightAccessory])] {
+    private var isPickingThermostat: Bool {
+        manager.pendingWidgetType == .thermostat
+    }
+
+    // Light filtering
+    private var filteredLightGroups: [(room: String, lights: [LightAccessory])] {
         let groups = manager.unaddedLightsGroupedByRoom
         guard !searchText.isEmpty else { return groups }
         return groups.compactMap { group in
@@ -493,8 +816,22 @@ struct AccessoryPickerSheet: View {
         }
     }
 
+    // Thermostat filtering
+    private var filteredThermostats: [ThermostatAccessory] {
+        let list = manager.unaddedThermostats
+        guard !searchText.isEmpty else { return list }
+        return list.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.roomName.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
     private var hasResults: Bool {
-        !filteredGroups.isEmpty
+        isPickingThermostat ? !filteredThermostats.isEmpty : !filteredLightGroups.isEmpty
+    }
+
+    private var isEmpty: Bool {
+        isPickingThermostat ? manager.unaddedThermostats.isEmpty : manager.unaddedLights.isEmpty
     }
 
     var body: some View {
@@ -502,16 +839,18 @@ struct AccessoryPickerSheet: View {
             ZStack {
                 DS.Color.background.ignoresSafeArea()
 
-                if manager.unaddedLights.isEmpty {
+                if isEmpty {
                     VStack(spacing: DS.Space.md) {
                         Spacer()
-                        Image(systemName: "lightbulb.slash")
+                        Image(systemName: isPickingThermostat ? "thermometer.medium.slash" : "lightbulb.slash")
                             .font(.system(size: 48, weight: .thin))
                             .foregroundColor(DS.Color.accentAmber.opacity(0.5))
-                        Text("No Available Lights")
+                        Text(isPickingThermostat ? "No Available Thermostats" : "No Available Lights")
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .foregroundColor(DS.Color.textPrimary)
-                        Text("All discovered lights have already been added as widgets, or no lights were found in this home.")
+                        Text(isPickingThermostat
+                             ? "No thermostats were found in this home, or all have been added."
+                             : "All discovered lights have already been added as widgets, or no lights were found in this home.")
                             .font(.system(size: 14, weight: .regular, design: .rounded))
                             .foregroundColor(DS.Color.textSecondary)
                             .multilineTextAlignment(.center)
@@ -525,7 +864,7 @@ struct AccessoryPickerSheet: View {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundColor(DS.Color.textTertiary)
-                            TextField("Search lights...", text: $searchText)
+                            TextField("Search...", text: $searchText)
                                 .font(.system(size: 15, design: .rounded))
                                 .foregroundColor(DS.Color.textPrimary)
                             if !searchText.isEmpty {
@@ -548,25 +887,11 @@ struct AccessoryPickerSheet: View {
 
                         if hasResults {
                             ScrollView {
-                                LazyVStack(spacing: DS.Space.md, pinnedViews: .sectionHeaders) {
-                                    ForEach(filteredGroups, id: \.room) { group in
-                                        Section {
-                                            ForEach(group.lights) { light in
-                                                Button {
-                                                    withAnimation(DS.Animation.snappy) {
-                                                        manager.addWidget(for: light)
-                                                    }
-                                                } label: {
-                                                    accessoryRow(light)
-                                                }
-                                            }
-                                        } header: {
-                                            roomHeader(group.room)
-                                        }
-                                    }
+                                if isPickingThermostat {
+                                    thermostatList
+                                } else {
+                                    lightList
                                 }
-                                .padding(.horizontal, DS.Space.lg)
-                                .padding(.bottom, DS.Space.xl)
                             }
                         } else {
                             VStack(spacing: DS.Space.md) {
@@ -584,7 +909,7 @@ struct AccessoryPickerSheet: View {
                     }
                 }
             }
-            .navigationTitle("Choose a Light")
+            .navigationTitle(isPickingThermostat ? "Choose a Thermostat" : "Choose a Light")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -597,6 +922,50 @@ struct AccessoryPickerSheet: View {
             }
         }
     }
+
+    // MARK: - Light List
+
+    private var lightList: some View {
+        LazyVStack(spacing: DS.Space.md, pinnedViews: .sectionHeaders) {
+            ForEach(filteredLightGroups, id: \.room) { group in
+                Section {
+                    ForEach(group.lights) { light in
+                        Button {
+                            withAnimation(DS.Animation.snappy) {
+                                manager.addWidget(for: light)
+                            }
+                        } label: {
+                            accessoryRow(name: light.name, room: light.roomName, icon: light.iconName, isGroup: light.isGroup, accent: DS.Color.accentAmber)
+                        }
+                    }
+                } header: {
+                    roomHeader(group.room)
+                }
+            }
+        }
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.bottom, DS.Space.xl)
+    }
+
+    // MARK: - Thermostat List
+
+    private var thermostatList: some View {
+        LazyVStack(spacing: DS.Space.md) {
+            ForEach(filteredThermostats) { thermostat in
+                Button {
+                    withAnimation(DS.Animation.snappy) {
+                        manager.addThermostatWidget(for: thermostat)
+                    }
+                } label: {
+                    accessoryRow(name: thermostat.name, room: thermostat.roomName, icon: "thermometer.medium", isGroup: false, accent: DS.Color.accentBlue)
+                }
+            }
+        }
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.bottom, DS.Space.xl)
+    }
+
+    // MARK: - Shared Components
 
     private func roomHeader(_ room: String) -> some View {
         HStack {
@@ -611,31 +980,31 @@ struct AccessoryPickerSheet: View {
         .background(DS.Color.background)
     }
 
-    private func accessoryRow(_ light: LightAccessory) -> some View {
+    private func accessoryRow(name: String, room: String, icon: String, isGroup: Bool, accent: Color) -> some View {
         HStack(spacing: DS.Space.md) {
-            Image(systemName: light.iconName)
+            Image(systemName: icon)
                 .font(.system(size: 22, weight: .medium))
-                .foregroundColor(DS.Color.accentAmber)
+                .foregroundColor(accent)
                 .frame(width: 44, height: 44)
-                .background(DS.Color.accentAmber.opacity(0.1))
+                .background(accent.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(light.name)
+                    Text(name)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundColor(DS.Color.textPrimary)
-                    if light.isGroup {
+                    if isGroup {
                         Text("Group")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundColor(DS.Color.accentAmber)
+                            .foregroundColor(accent)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(DS.Color.accentAmber.opacity(0.15))
+                            .background(accent.opacity(0.15))
                             .clipShape(Capsule())
                     }
                 }
-                Text(light.roomName)
+                Text(room)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundColor(DS.Color.textSecondary)
             }
@@ -644,7 +1013,7 @@ struct AccessoryPickerSheet: View {
 
             Image(systemName: "plus.circle.fill")
                 .font(.system(size: 22))
-                .foregroundColor(DS.Color.accentAmber)
+                .foregroundColor(accent)
         }
         .padding(DS.Space.md)
         .background(DS.Color.surface)

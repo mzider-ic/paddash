@@ -10,6 +10,8 @@ final class HomeKitManager: NSObject, ObservableObject {
     @Published var homes: [HMHome] = []
     @Published var selectedHome: HMHome?
     @Published var availableLights: [LightAccessory] = []
+    @Published var availableThermostats: [ThermostatAccessory] = []
+    @Published var availableHumiditySensors: [HumiditySensor] = []
     @Published var widgets: [HomeKitWidget] = []
     @Published var statusMessage: String?
     @Published var isLoading = true
@@ -18,6 +20,10 @@ final class HomeKitManager: NSObject, ObservableObject {
     @Published var showWidgetTypePicker = false
     @Published var showAccessoryPicker = false
     @Published var pendingWidgetType: HomeKitWidgetType?
+
+    // Rename sheet state
+    @Published var widgetBeingRenamed: HomeKitWidget?
+    @Published var renameText: String = ""
 
     let homeManager = HMHomeManager()
     private let store = DashboardStore.shared
@@ -37,7 +43,8 @@ final class HomeKitManager: NSObject, ObservableObject {
             PersistedWidgetEntry(
                 id: $0.id.uuidString,
                 kind: $0.type.rawValue,
-                referenceID: $0.light.id.uuidString
+                referenceID: $0.referenceID,
+                customName: $0.customName
             )
         }
         store.saveHomeKitWidgets(entries)
@@ -53,10 +60,28 @@ final class HomeKitManager: NSObject, ObservableObject {
         var restored: [HomeKitWidget] = []
         for entry in entries {
             guard let widgetType = HomeKitWidgetType(rawValue: entry.kind),
-                  let lightID = UUID(uuidString: entry.referenceID),
-                  let light = availableLights.first(where: { $0.id == lightID }),
                   let widgetID = UUID(uuidString: entry.id) else { continue }
-            restored.append(HomeKitWidget(id: widgetID, type: widgetType, light: light))
+
+            switch widgetType {
+            case .lightDimmer:
+                guard let lightID = UUID(uuidString: entry.referenceID),
+                      let light = availableLights.first(where: { $0.id == lightID }) else { continue }
+                restored.append(HomeKitWidget(id: widgetID, type: widgetType, light: light, customName: entry.customName))
+
+            case .thermostat:
+                guard let thermostatID = UUID(uuidString: entry.referenceID),
+                      let thermostat = availableThermostats.first(where: { $0.id == thermostatID }) else { continue }
+                var widget = HomeKitWidget(id: widgetID, type: widgetType, light: LightAccessory.placeholder)
+                widget.thermostat = thermostat
+                widget.customName = entry.customName
+                restored.append(widget)
+
+            case .humidity:
+                // Humidity widget doesn't reference a specific accessory
+                var widget = HomeKitWidget(id: widgetID, type: widgetType, light: LightAccessory.placeholder)
+                widget.customName = entry.customName
+                restored.append(widget)
+            }
         }
         widgets = restored
     }
@@ -65,25 +90,30 @@ final class HomeKitManager: NSObject, ObservableObject {
 
     func selectHome(_ home: HMHome) {
         selectedHome = home
-        discoverLights()
+        discoverAccessories()
         saveState()
     }
 
     // MARK: - Discovery
 
-    func discoverLights() {
+    func discoverAccessories() {
         guard let home = selectedHome else {
             availableLights = []
+            availableThermostats = []
+            availableHumiditySensors = []
             statusMessage = "No HomeKit home selected."
             isLoading = false
             return
         }
 
-        var discovered: [LightAccessory] = []
+        var discoveredLights: [LightAccessory] = []
+        var discoveredThermostats: [ThermostatAccessory] = []
+        var discoveredHumidity: [HumiditySensor] = []
 
-        // Discover individual lightbulb services
         for accessory in home.accessories {
             accessory.delegate = self
+
+            // Discover lightbulb services
             for service in accessory.services where service.serviceType == HMServiceTypeLightbulb {
                 let light = LightAccessory(
                     id: service.uniqueIdentifier,
@@ -95,8 +125,50 @@ final class HomeKitManager: NSObject, ObservableObject {
                     brightness: 100,
                     categoryType: accessory.category.categoryType
                 )
-                discovered.append(light)
+                discoveredLights.append(light)
+                for characteristic in service.characteristics {
+                    characteristic.enableNotification(true) { _ in }
+                }
+            }
 
+            // Discover thermostat services
+            for service in accessory.services where service.serviceType == HMServiceTypeThermostat {
+                let thermostat = ThermostatAccessory(
+                    id: service.uniqueIdentifier,
+                    accessory: accessory,
+                    service: service,
+                    name: service.name,
+                    roomName: accessory.room?.name ?? "Default Room",
+                    currentTemperature: 0,
+                    targetTemperature: 20,
+                    currentMode: .off,
+                    targetMode: .off
+                )
+                discoveredThermostats.append(thermostat)
+                for characteristic in service.characteristics {
+                    characteristic.enableNotification(true) { _ in }
+                }
+            }
+
+            // Discover ANY service that exposes humidity (covers dedicated sensors, thermostats, HomePods, etc.)
+            for service in accessory.services {
+                let hasHumidity = service.characteristics.contains {
+                    $0.characteristicType == HMCharacteristicTypeCurrentRelativeHumidity
+                }
+                guard hasHumidity else { continue }
+                // Avoid duplicate entries when the same accessory exposes humidity on multiple services
+                let alreadyAdded = discoveredHumidity.contains { $0.service.uniqueIdentifier == service.uniqueIdentifier }
+                guard !alreadyAdded else { continue }
+
+                let sensor = HumiditySensor(
+                    id: service.uniqueIdentifier,
+                    accessory: accessory,
+                    service: service,
+                    name: accessory.name,
+                    roomName: accessory.room?.name ?? "Default Room",
+                    humidity: 0
+                )
+                discoveredHumidity.append(sensor)
                 for characteristic in service.characteristics {
                     characteristic.enableNotification(true) { _ in }
                 }
@@ -121,7 +193,7 @@ final class HomeKitManager: NSObject, ObservableObject {
                 isGroup: true,
                 groupServices: lightServices
             )
-            discovered.append(groupLight)
+            discoveredLights.append(groupLight)
 
             for service in lightServices {
                 for characteristic in service.characteristics {
@@ -130,25 +202,46 @@ final class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        availableLights = discovered
-        statusMessage = discovered.isEmpty ? "No lights found in \(home.name). Add lightbulb accessories in the Home app." : nil
+        availableLights = discoveredLights
+        availableThermostats = discoveredThermostats
+        availableHumiditySensors = discoveredHumidity
+
+        let totalAccessories = discoveredLights.count + discoveredThermostats.count + discoveredHumidity.count
+        statusMessage = totalAccessories == 0 ? "No compatible accessories found in \(home.name)." : nil
         isLoading = false
 
-        for light in discovered {
-            refreshValues(for: light)
+        for light in discoveredLights {
+            refreshLightValues(for: light)
+        }
+        for thermostat in discoveredThermostats {
+            refreshThermostatValues(for: thermostat)
+        }
+        for sensor in discoveredHumidity {
+            refreshHumidityValues(for: sensor)
         }
 
-        refreshWidgetLights()
+        refreshWidgetAccessories()
     }
 
-    private func refreshWidgetLights() {
+    // Keep backward compatibility
+    func discoverLights() {
+        discoverAccessories()
+    }
+
+    private func refreshWidgetAccessories() {
         for (widgetIndex, widget) in widgets.enumerated() {
-            if let freshLight = availableLights.first(where: { $0.id == widget.light.id }) {
-                widgets[widgetIndex] = HomeKitWidget(
-                    id: widget.id,
-                    type: widget.type,
-                    light: freshLight
-                )
+            switch widget.type {
+            case .lightDimmer:
+                if let freshLight = availableLights.first(where: { $0.id == widget.light.id }) {
+                    widgets[widgetIndex].light = freshLight
+                }
+            case .thermostat:
+                if let thermostat = widget.thermostat,
+                   let fresh = availableThermostats.first(where: { $0.id == thermostat.id }) {
+                    widgets[widgetIndex].thermostat = fresh
+                }
+            case .humidity:
+                break // Humidity widget reads from availableHumiditySensors directly
             }
         }
     }
@@ -162,7 +255,16 @@ final class HomeKitManager: NSObject, ObservableObject {
     func selectWidgetType(_ type: HomeKitWidgetType) {
         pendingWidgetType = type
         showWidgetTypePicker = false
-        showAccessoryPicker = true
+
+        if type.requiresAccessorySelection {
+            showAccessoryPicker = true
+        } else {
+            // Humidity widget — add directly, no accessory to pick
+            let widget = HomeKitWidget(id: UUID(), type: type, light: LightAccessory.placeholder)
+            widgets.append(widget)
+            pendingWidgetType = nil
+            saveState()
+        }
     }
 
     func addWidget(for light: LightAccessory) {
@@ -174,15 +276,72 @@ final class HomeKitManager: NSObject, ObservableObject {
         saveState()
     }
 
+    func addThermostatWidget(for thermostat: ThermostatAccessory) {
+        guard let type = pendingWidgetType else { return }
+        var widget = HomeKitWidget(id: UUID(), type: type, light: LightAccessory.placeholder)
+        widget.thermostat = thermostat
+        widgets.append(widget)
+        showAccessoryPicker = false
+        pendingWidgetType = nil
+        saveState()
+    }
+
     func removeWidget(_ widget: HomeKitWidget) {
         widgets.removeAll { $0.id == widget.id }
         saveState()
     }
 
+    func moveWidget(from source: IndexSet, to destination: Int) {
+        widgets.move(fromOffsets: source, toOffset: destination)
+        saveState()
+    }
+
+    // MARK: - Widget Rename
+
+    func beginRename(_ widget: HomeKitWidget) {
+        widgetBeingRenamed = widget
+        renameText = widget.customName ?? ""
+    }
+
+    func commitRename() {
+        guard let widget = widgetBeingRenamed,
+              let index = widgets.firstIndex(where: { $0.id == widget.id }) else {
+            widgetBeingRenamed = nil
+            return
+        }
+        let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        widgets[index].customName = trimmed.isEmpty ? nil : trimmed
+        widgetBeingRenamed = nil
+        renameText = ""
+        saveState()
+    }
+
+    func cancelRename() {
+        widgetBeingRenamed = nil
+        renameText = ""
+    }
+
+    // MARK: - Accessory Filtering
+
     /// Lights that haven't been added as widgets yet
     var unaddedLights: [LightAccessory] {
-        let widgetServiceIDs = Set(widgets.map { $0.light.service.uniqueIdentifier })
-        return availableLights.filter { !widgetServiceIDs.contains($0.service.uniqueIdentifier) }
+        let widgetServiceIDs = Set(widgets.compactMap { widget -> UUID? in
+            guard widget.type == .lightDimmer else { return nil }
+            return widget.light.service?.uniqueIdentifier
+        })
+        return availableLights.filter { light in
+            guard let serviceID = light.service?.uniqueIdentifier else { return false }
+            return !widgetServiceIDs.contains(serviceID)
+        }
+    }
+
+    /// Thermostats that haven't been added as widgets yet
+    var unaddedThermostats: [ThermostatAccessory] {
+        let widgetServiceIDs = Set(widgets.compactMap { widget -> UUID? in
+            guard widget.type == .thermostat else { return nil }
+            return widget.thermostat?.service.uniqueIdentifier
+        })
+        return availableThermostats.filter { !widgetServiceIDs.contains($0.service.uniqueIdentifier) }
     }
 
     /// Unadded lights grouped by room, each group sorted alphabetically
@@ -197,9 +356,20 @@ final class HomeKitManager: NSObject, ObservableObject {
             .sorted { $0.room.localizedCaseInsensitiveCompare($1.room) == .orderedAscending }
     }
 
-    // MARK: - Read Values
+    /// Humidity sensors grouped by room
+    var humiditySensorsGroupedByRoom: [(room: String, sensors: [HumiditySensor])] {
+        var grouped: [String: [HumiditySensor]] = [:]
+        for sensor in availableHumiditySensors {
+            grouped[sensor.roomName, default: []].append(sensor)
+        }
+        return grouped
+            .map { (room: $0.key, sensors: $0.value.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) }
+            .sorted { $0.room.localizedCaseInsensitiveCompare($1.room) == .orderedAscending }
+    }
 
-    func refreshValues(for light: LightAccessory) {
+    // MARK: - Read Light Values
+
+    func refreshLightValues(for light: LightAccessory) {
         light.powerCharacteristic?.readValue { [weak self] _ in
             Task { @MainActor in
                 self?.updateLocalState(for: light)
@@ -210,6 +380,11 @@ final class HomeKitManager: NSObject, ObservableObject {
                 self?.updateLocalState(for: light)
             }
         }
+    }
+
+    // Keep backward compatibility
+    func refreshValues(for light: LightAccessory) {
+        refreshLightValues(for: light)
     }
 
     func updateLocalState(for light: LightAccessory) {
@@ -226,42 +401,121 @@ final class HomeKitManager: NSObject, ObservableObject {
     }
 
     func updateWidgetState(for light: LightAccessory) {
+        guard let lightServiceID = light.service?.uniqueIdentifier else { return }
         for (index, widget) in widgets.enumerated() {
-            if widget.light.service.uniqueIdentifier == light.service.uniqueIdentifier {
+            guard widget.type == .lightDimmer else { continue }
+            if widget.light.service?.uniqueIdentifier == lightServiceID {
                 if let power = light.powerCharacteristic?.value as? Bool {
-                    widgets[index] = HomeKitWidget(
-                        id: widget.id,
-                        type: widget.type,
-                        light: LightAccessory(
-                            id: widget.light.id,
-                            accessory: widget.light.accessory,
-                            service: widget.light.service,
-                            name: widget.light.name,
-                            roomName: widget.light.roomName,
-                            isOn: power,
-                            brightness: widgets[index].light.brightness,
-                            categoryType: widget.light.categoryType,
-                            isGroup: widget.light.isGroup,
-                            groupServices: widget.light.groupServices,
-                            isStale: false
-                        )
-                    )
+                    widgets[index].light.isOn = power
+                    widgets[index].light.isStale = false
                 }
                 if let brightness = light.brightnessCharacteristic?.value as? Int {
-                    var updatedLight = widgets[index].light
-                    updatedLight.brightness = brightness
-                    updatedLight.isStale = false
-                    widgets[index] = HomeKitWidget(
-                        id: widget.id,
-                        type: widget.type,
-                        light: updatedLight
-                    )
+                    widgets[index].light.brightness = brightness
+                    widgets[index].light.isStale = false
                 }
             }
         }
     }
 
-    // MARK: - Controls
+    // MARK: - Read Thermostat Values
+
+    func refreshThermostatValues(for thermostat: ThermostatAccessory) {
+        thermostat.currentTemperatureCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateThermostatState(for: thermostat) }
+        }
+        thermostat.targetTemperatureCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateThermostatState(for: thermostat) }
+        }
+        thermostat.currentHeatingCoolingCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateThermostatState(for: thermostat) }
+        }
+        thermostat.targetHeatingCoolingCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateThermostatState(for: thermostat) }
+        }
+    }
+
+    func updateThermostatState(for thermostat: ThermostatAccessory) {
+        if let index = availableThermostats.firstIndex(where: { $0.id == thermostat.id }) {
+            if let temp = thermostat.currentTemperatureCharacteristic?.value as? Double {
+                availableThermostats[index].currentTemperature = temp
+            } else if let temp = thermostat.currentTemperatureCharacteristic?.value as? NSNumber {
+                availableThermostats[index].currentTemperature = temp.doubleValue
+            }
+            if let temp = thermostat.targetTemperatureCharacteristic?.value as? Double {
+                availableThermostats[index].targetTemperature = temp
+            } else if let temp = thermostat.targetTemperatureCharacteristic?.value as? NSNumber {
+                availableThermostats[index].targetTemperature = temp.doubleValue
+            }
+            if let mode = thermostat.currentHeatingCoolingCharacteristic?.value as? Int {
+                availableThermostats[index].currentMode = ThermostatMode.from(heatingCoolingValue: mode)
+            }
+            if let mode = thermostat.targetHeatingCoolingCharacteristic?.value as? Int {
+                availableThermostats[index].targetMode = ThermostatMode.from(heatingCoolingValue: mode)
+            }
+            availableThermostats[index].isStale = false
+
+            // Update widget
+            for (wIndex, widget) in widgets.enumerated() {
+                if widget.type == .thermostat, widget.thermostat?.id == thermostat.id {
+                    widgets[wIndex].thermostat = availableThermostats[index]
+                }
+            }
+        }
+    }
+
+    // MARK: - Read Humidity Values
+
+    func refreshHumidityValues(for sensor: HumiditySensor) {
+        sensor.humidityCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateHumidityState(for: sensor) }
+        }
+    }
+
+    func updateHumidityState(for sensor: HumiditySensor) {
+        if let index = availableHumiditySensors.firstIndex(where: { $0.id == sensor.id }) {
+            if let humidity = sensor.humidityCharacteristic?.value as? Double {
+                availableHumiditySensors[index].humidity = humidity
+            } else if let humidity = sensor.humidityCharacteristic?.value as? NSNumber {
+                availableHumiditySensors[index].humidity = humidity.doubleValue
+            }
+            availableHumiditySensors[index].isStale = false
+        }
+    }
+
+    // MARK: - Thermostat Controls
+
+    func setTargetTemperature(for thermostat: ThermostatAccessory, celsius: Double) {
+        guard let characteristic = thermostat.targetTemperatureCharacteristic else { return }
+        let clamped = min(32, max(10, celsius)) // HomeKit typical range in Celsius
+
+        if let index = availableThermostats.firstIndex(where: { $0.id == thermostat.id }) {
+            availableThermostats[index].targetTemperature = clamped
+            for (wIndex, widget) in widgets.enumerated() {
+                if widget.type == .thermostat, widget.thermostat?.id == thermostat.id {
+                    widgets[wIndex].thermostat?.targetTemperature = clamped
+                }
+            }
+        }
+
+        characteristic.writeValue(clamped) { _ in }
+    }
+
+    func setTargetMode(for thermostat: ThermostatAccessory, mode: ThermostatMode) {
+        guard let characteristic = thermostat.targetHeatingCoolingCharacteristic else { return }
+
+        if let index = availableThermostats.firstIndex(where: { $0.id == thermostat.id }) {
+            availableThermostats[index].targetMode = mode
+            for (wIndex, widget) in widgets.enumerated() {
+                if widget.type == .thermostat, widget.thermostat?.id == thermostat.id {
+                    widgets[wIndex].thermostat?.targetMode = mode
+                }
+            }
+        }
+
+        characteristic.writeValue(mode.rawValue) { _ in }
+    }
+
+    // MARK: - Light Controls
 
     func togglePower(for light: LightAccessory) {
         let characteristics = light.allPowerCharacteristics
@@ -271,11 +525,11 @@ final class HomeKitManager: NSObject, ObservableObject {
         if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
             availableLights[index].isOn = newValue
         }
+        let lightServiceID = light.service?.uniqueIdentifier
         for (index, widget) in widgets.enumerated() {
-            if widget.light.service.uniqueIdentifier == light.service.uniqueIdentifier {
-                var updated = widget.light
-                updated.isOn = newValue
-                widgets[index] = HomeKitWidget(id: widget.id, type: widget.type, light: updated)
+            if widget.type == .lightDimmer,
+               widget.light.service?.uniqueIdentifier == lightServiceID {
+                widgets[index].light.isOn = newValue
             }
         }
 
@@ -291,10 +545,8 @@ final class HomeKitManager: NSObject, ObservableObject {
             availableLights[index].isOn = newValue
         }
         for (index, widget) in widgets.enumerated() {
-            if widget.light.id == light.id {
-                var updated = widget.light
-                updated.isOn = newValue
-                widgets[index] = HomeKitWidget(id: widget.id, type: widget.type, light: updated)
+            if widget.type == .lightDimmer, widget.light.id == light.id {
+                widgets[index].light.isOn = newValue
             }
         }
 
@@ -311,11 +563,11 @@ final class HomeKitManager: NSObject, ObservableObject {
         if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
             availableLights[index].brightness = clamped
         }
+        let lightServiceID = light.service?.uniqueIdentifier
         for (index, widget) in widgets.enumerated() {
-            if widget.light.service.uniqueIdentifier == light.service.uniqueIdentifier {
-                var updated = widget.light
-                updated.brightness = clamped
-                widgets[index] = HomeKitWidget(id: widget.id, type: widget.type, light: updated)
+            if widget.type == .lightDimmer,
+               widget.light.service?.uniqueIdentifier == lightServiceID {
+                widgets[index].light.brightness = clamped
             }
         }
     }

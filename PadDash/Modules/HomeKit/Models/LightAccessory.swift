@@ -5,8 +5,8 @@ import HomeKit
 
 struct LightAccessory: Identifiable {
     let id: UUID
-    let accessory: HMAccessory
-    let service: HMService
+    let accessory: HMAccessory?
+    let service: HMService?
     var name: String
     var roomName: String
     var isOn: Bool
@@ -16,22 +16,37 @@ struct LightAccessory: Identifiable {
     var groupServices: [HMService] = []  // All services in a group (empty for individual lights)
     var isStale: Bool = true  // True until the first readValue callback completes
 
+    /// Placeholder for non-light widget types (thermostat, humidity)
+    static let placeholder = LightAccessory(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+        accessory: nil,
+        service: nil,
+        name: "",
+        roomName: "",
+        isOn: false,
+        brightness: 0,
+        categoryType: "",
+        isStale: false
+    )
+
     var powerCharacteristic: HMCharacteristic? {
-        service.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState }
+        service?.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState }
     }
 
     var brightnessCharacteristic: HMCharacteristic? {
-        service.characteristics.first { $0.characteristicType == HMCharacteristicTypeBrightness }
+        service?.characteristics.first { $0.characteristicType == HMCharacteristicTypeBrightness }
     }
 
     /// All power characteristics (multiple for groups, single for individual)
     var allPowerCharacteristics: [HMCharacteristic] {
+        guard let service else { return [] }
         let services = isGroup && !groupServices.isEmpty ? groupServices : [service]
         return services.compactMap { $0.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState } }
     }
 
     /// All brightness characteristics (multiple for groups, single for individual)
     var allBrightnessCharacteristics: [HMCharacteristic] {
+        guard let service else { return [] }
         let services = isGroup && !groupServices.isEmpty ? groupServices : [service]
         return services.compactMap { $0.characteristics.first { $0.characteristicType == HMCharacteristicTypeBrightness } }
     }

@@ -9,6 +9,7 @@ struct PersistedWidgetEntry: Codable, Identifiable {
     let id: String           // Widget UUID string
     let kind: String         // Widget kind key (e.g. HomeKitWidgetType rawValue)
     let referenceID: String  // External object ID (e.g. HMService UUID, timer slot UUID)
+    var customName: String?  // User-defined local rename (nil = use accessory name)
 }
 
 // MARK: - Persisted Timer Entry
