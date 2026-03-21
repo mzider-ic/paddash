@@ -30,6 +30,7 @@ struct ContentView: View {
     @StateObject private var dashVM = DashboardVM()
     @StateObject private var homeKitManager = HomeKitManager()
     @State private var activeTab: DashTab = .timers
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -66,6 +67,11 @@ struct ContentView: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .animation(DS.Animation.snappy, value: dashVM.alertingSlots.map(\.id))
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                dashVM.saveSlots()
+            }
+        }
     }
 
     // MARK: - Header

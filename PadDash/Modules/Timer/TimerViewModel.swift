@@ -115,6 +115,7 @@ final class TimerSlotVM: ObservableObject, Identifiable {
         timer.state = .idle
         stopTick()
         isEditingDuration = false
+        NotificationCenter.default.post(name: .timerSlotsDidChange, object: nil)
     }
 
     func applyPreset(seconds: Int) {
@@ -214,6 +215,10 @@ final class TimerSlotVM: ObservableObject, Identifiable {
     }
 }
 
+extension Notification.Name {
+    static let timerSlotsDidChange = Notification.Name("timerSlotsDidChange")
+}
+
 // MARK: - Dashboard ViewModel
 
 @MainActor
@@ -222,17 +227,31 @@ final class DashboardVM: ObservableObject {
     @Published var alertingSlots: [TimerSlotVM] = []
 
     private var slotCancellables: [UUID: AnyCancellable] = [:]
+    private var saveObserver: AnyCancellable?
+    private let store = DashboardStore.shared
 
-    private static let accentCycle: [Color] = [
+    static let accentCycle: [Color] = [
         DS.Color.accentBlue,
         DS.Color.accentMint,
         DS.Color.accentAmber,
     ]
 
     init() {
-        let first = TimerSlotVM(label: "Timer 1", accent: Self.accentCycle[0])
-        slots = [first]
-        observeSlot(first)
+        let restored = Self.restoreSlots()
+        if !restored.isEmpty {
+            slots = restored
+            for slot in restored {
+                observeSlot(slot)
+            }
+        } else {
+            let first = TimerSlotVM(label: "Timer 1", accent: Self.accentCycle[0])
+            slots = [first]
+            observeSlot(first)
+        }
+        saveObserver = NotificationCenter.default.publisher(for: .timerSlotsDidChange)
+            .sink { [weak self] _ in
+                self?.saveSlots()
+            }
     }
 
     private func observeSlot(_ slot: TimerSlotVM) {
@@ -266,6 +285,7 @@ final class DashboardVM: ObservableObject {
         withAnimation(DS.Animation.snappy) {
             slots.append(newSlot)
         }
+        saveSlots()
     }
 
     func removeTimer(_ slot: TimerSlotVM) {
@@ -274,6 +294,31 @@ final class DashboardVM: ObservableObject {
         removeSlotObserver(slot)
         withAnimation(DS.Animation.snappy) {
             slots.removeAll { $0.id == slot.id }
+        }
+        saveSlots()
+    }
+
+    // MARK: - Persistence
+
+    func saveSlots() {
+        let entries = slots.enumerated().map { index, slot in
+            PersistedTimerEntry(
+                label: slot.timer.label,
+                totalSeconds: slot.timer.totalSeconds,
+                accentIndex: index % Self.accentCycle.count
+            )
+        }
+        store.saveTimerSlots(entries)
+    }
+
+    private static func restoreSlots() -> [TimerSlotVM] {
+        let entries = DashboardStore.shared.loadTimerSlots()
+        guard !entries.isEmpty else { return [] }
+        return entries.map { entry in
+            let accent = accentCycle[entry.accentIndex % accentCycle.count]
+            let slot = TimerSlotVM(label: entry.label, accent: accent)
+            slot.applyPreset(seconds: entry.totalSeconds)
+            return slot
         }
     }
 }

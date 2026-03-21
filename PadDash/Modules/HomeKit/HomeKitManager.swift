@@ -1,128 +1,6 @@
 import SwiftUI
 import HomeKit
 
-// MARK: - Light Accessory Model
-
-struct LightAccessory: Identifiable {
-    let id: UUID
-    let accessory: HMAccessory
-    let service: HMService
-    var name: String
-    var roomName: String
-    var isOn: Bool
-    var brightness: Int  // 0–100
-    var categoryType: String  // HMAccessoryCategoryType for icon mapping
-    var isGroup: Bool = false
-    var groupServices: [HMService] = []  // All services in a group (empty for individual lights)
-
-    var powerCharacteristic: HMCharacteristic? {
-        service.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState }
-    }
-
-    var brightnessCharacteristic: HMCharacteristic? {
-        service.characteristics.first { $0.characteristicType == HMCharacteristicTypeBrightness }
-    }
-
-    /// All power characteristics (multiple for groups, single for individual)
-    var allPowerCharacteristics: [HMCharacteristic] {
-        let services = isGroup && !groupServices.isEmpty ? groupServices : [service]
-        return services.compactMap { $0.characteristics.first { $0.characteristicType == HMCharacteristicTypePowerState } }
-    }
-
-    /// All brightness characteristics (multiple for groups, single for individual)
-    var allBrightnessCharacteristics: [HMCharacteristic] {
-        let services = isGroup && !groupServices.isEmpty ? groupServices : [service]
-        return services.compactMap { $0.characteristics.first { $0.characteristicType == HMCharacteristicTypeBrightness } }
-    }
-
-    /// SF Symbol matching the HomeKit accessory category
-    var iconName: String {
-        if #available(iOS 18.0, *) {
-            switch categoryType {
-            case HMAccessoryCategoryTypeSpeaker:
-                return "hifispeaker.fill"
-            case HMAccessoryCategoryTypeTelevision:
-                return "tv.fill"
-            default:
-                break
-            }
-        }
-        switch categoryType {
-        case HMAccessoryCategoryTypeLightbulb:
-            return "lightbulb.fill"
-        case HMAccessoryCategoryTypeOutlet:
-            return "powerplug.fill"
-        case HMAccessoryCategoryTypeSwitch, HMAccessoryCategoryTypeProgrammableSwitch:
-            return "light.switch.2"
-        case HMAccessoryCategoryTypeFan:
-            return "fan.fill"
-        case HMAccessoryCategoryTypeThermostat:
-            return "thermometer.medium"
-        case HMAccessoryCategoryTypeSensor:
-            return "sensor.fill"
-        case HMAccessoryCategoryTypeDoor:
-            return "door.left.hand.closed"
-        case HMAccessoryCategoryTypeDoorLock:
-            return "lock.fill"
-        case HMAccessoryCategoryTypeGarageDoorOpener:
-            return "door.garage.closed"
-        case HMAccessoryCategoryTypeWindow:
-            return "window.vertical.closed"
-        case HMAccessoryCategoryTypeWindowCovering:
-            return "blinds.vertical.closed"
-        case HMAccessoryCategoryTypeBridge:
-            return "network"
-        case HMAccessoryCategoryTypeAirPurifier:
-            return "air.purifier.fill"
-        default:
-            return isGroup ? "square.stack.3d.up.fill" : "lightbulb.fill"
-        }
-    }
-}
-
-// MARK: - HomeKit Widget Type
-
-enum HomeKitWidgetType: String, CaseIterable, Identifiable {
-    case lightDimmer
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .lightDimmer: return "Light Dimmer"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .lightDimmer: return "lightbulb.fill"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .lightDimmer: return "Control brightness and power for a light"
-        }
-    }
-
-    var accent: Color {
-        switch self {
-        case .lightDimmer: return DS.Color.accentAmber
-        }
-    }
-}
-
-// MARK: - HomeKit Widget
-
-struct HomeKitWidget: Identifiable {
-    let id: UUID
-    let type: HomeKitWidgetType
-    let light: LightAccessory
-
-    var accessoryName: String { light.name }
-    var roomName: String { light.roomName }
-}
-
 // MARK: - HomeKit Manager
 
 @MainActor
@@ -141,11 +19,46 @@ final class HomeKitManager: NSObject, ObservableObject {
     @Published var showAccessoryPicker = false
     @Published var pendingWidgetType: HomeKitWidgetType?
 
-    private let homeManager = HMHomeManager()
+    let homeManager = HMHomeManager()
+    private let store = DashboardStore.shared
 
     override init() {
         super.init()
         homeManager.delegate = self
+    }
+
+    // MARK: - Persistence
+
+    func saveState() {
+        if let homeID = selectedHome?.uniqueIdentifier {
+            store.saveSelectedHomeID(homeID)
+        }
+        let entries = widgets.map {
+            PersistedWidgetEntry(
+                id: $0.id.uuidString,
+                kind: $0.type.rawValue,
+                referenceID: $0.light.id.uuidString
+            )
+        }
+        store.saveHomeKitWidgets(entries)
+    }
+
+    func restoreSelectedHome() {
+        guard let savedID = store.loadSelectedHomeID() else { return }
+        selectedHome = homes.first { $0.uniqueIdentifier == savedID }
+    }
+
+    func restoreWidgets() {
+        let entries = store.loadHomeKitWidgets()
+        var restored: [HomeKitWidget] = []
+        for entry in entries {
+            guard let widgetType = HomeKitWidgetType(rawValue: entry.kind),
+                  let lightID = UUID(uuidString: entry.referenceID),
+                  let light = availableLights.first(where: { $0.id == lightID }),
+                  let widgetID = UUID(uuidString: entry.id) else { continue }
+            restored.append(HomeKitWidget(id: widgetID, type: widgetType, light: light))
+        }
+        widgets = restored
     }
 
     // MARK: - Home Selection
@@ -153,11 +66,12 @@ final class HomeKitManager: NSObject, ObservableObject {
     func selectHome(_ home: HMHome) {
         selectedHome = home
         discoverLights()
+        saveState()
     }
 
     // MARK: - Discovery
 
-    private func discoverLights() {
+    func discoverLights() {
         guard let home = selectedHome else {
             availableLights = []
             statusMessage = "No HomeKit home selected."
@@ -183,7 +97,6 @@ final class HomeKitManager: NSObject, ObservableObject {
                 )
                 discovered.append(light)
 
-                // Enable notifications for live updates
                 for characteristic in service.characteristics {
                     characteristic.enableNotification(true) { _ in }
                 }
@@ -196,7 +109,6 @@ final class HomeKitManager: NSObject, ObservableObject {
             guard !lightServices.isEmpty, let firstService = lightServices.first else { continue }
             guard let firstAccessory = firstService.accessory else { continue }
 
-            // Use the first service's accessory as the representative for the group
             let groupLight = LightAccessory(
                 id: group.uniqueIdentifier,
                 accessory: firstAccessory,
@@ -222,21 +134,16 @@ final class HomeKitManager: NSObject, ObservableObject {
         statusMessage = discovered.isEmpty ? "No lights found in \(home.name). Add lightbulb accessories in the Home app." : nil
         isLoading = false
 
-        // Read current values
         for light in discovered {
             refreshValues(for: light)
         }
 
-        // Also refresh any existing widgets that reference lights in this home
         refreshWidgetLights()
     }
 
     private func refreshWidgetLights() {
         for (widgetIndex, widget) in widgets.enumerated() {
-            if let freshLight = availableLights.first(where: {
-                $0.id == widget.light.id
-            }) {
-                // This now correctly passes the object containing the groupServices array
+            if let freshLight = availableLights.first(where: { $0.id == widget.light.id }) {
                 widgets[widgetIndex] = HomeKitWidget(
                     id: widget.id,
                     type: widget.type,
@@ -264,10 +171,12 @@ final class HomeKitManager: NSObject, ObservableObject {
         widgets.append(widget)
         showAccessoryPicker = false
         pendingWidgetType = nil
+        saveState()
     }
 
     func removeWidget(_ widget: HomeKitWidget) {
         widgets.removeAll { $0.id == widget.id }
+        saveState()
     }
 
     /// Lights that haven't been added as widgets yet
@@ -290,7 +199,7 @@ final class HomeKitManager: NSObject, ObservableObject {
 
     // MARK: - Read Values
 
-    private func refreshValues(for light: LightAccessory) {
+    func refreshValues(for light: LightAccessory) {
         light.powerCharacteristic?.readValue { [weak self] _ in
             Task { @MainActor in
                 self?.updateLocalState(for: light)
@@ -303,8 +212,7 @@ final class HomeKitManager: NSObject, ObservableObject {
         }
     }
 
-    private func updateLocalState(for light: LightAccessory) {
-        // Update in availableLights
+    func updateLocalState(for light: LightAccessory) {
         if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
             if let power = light.powerCharacteristic?.value as? Bool {
                 availableLights[index].isOn = power
@@ -313,12 +221,10 @@ final class HomeKitManager: NSObject, ObservableObject {
                 availableLights[index].brightness = brightness
             }
         }
-
-        // Also update any widget using this light
         updateWidgetState(for: light)
     }
 
-    private func updateWidgetState(for light: LightAccessory) {
+    func updateWidgetState(for light: LightAccessory) {
         for (index, widget) in widgets.enumerated() {
             if widget.light.service.uniqueIdentifier == light.service.uniqueIdentifier {
                 if let power = light.powerCharacteristic?.value as? Bool {
@@ -359,7 +265,6 @@ final class HomeKitManager: NSObject, ObservableObject {
         guard !characteristics.isEmpty else { return }
         let newValue = !light.isOn
 
-        // Optimistically update UI immediately
         if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
             availableLights[index].isOn = newValue
         }
@@ -371,39 +276,35 @@ final class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        // Write to all characteristics (handles groups)
         for characteristic in characteristics {
             characteristic.writeValue(newValue) { _ in }
         }
     }
-    
+
     func togglePowerForGroupLight(light: LightAccessory) {
-        print("Group Light: \(light)")
-        let characteristics = light.allPowerCharacteristics
-        guard !characteristics.isEmpty else { return }
         let newValue = !light.isOn
 
-        for service in light.groupServices {
-            if let characteristic = service.characteristics.first(where: { $0.characteristicType == HMCharacteristicTypePowerState }) {
-                
-                characteristic.writeValue(newValue) { error in
-                    if let error = error {
-                        print("Failed to update \(service.name): \(error.localizedDescription)")
-                    } else {
-                        print("Successfully updated \(service.name)")
-                    }
-                }
+        if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
+            availableLights[index].isOn = newValue
+        }
+        for (index, widget) in widgets.enumerated() {
+            if widget.light.id == light.id {
+                var updated = widget.light
+                updated.isOn = newValue
+                widgets[index] = HomeKitWidget(id: widget.id, type: widget.type, light: updated)
             }
         }
 
+        for service in light.groupServices {
+            if let characteristic = service.characteristics.first(where: { $0.characteristicType == HMCharacteristicTypePowerState }) {
+                characteristic.writeValue(newValue) { _ in }
+            }
+        }
     }
 
-    func setBrightness(for light: LightAccessory, value: Int) {
-        let characteristics = light.allBrightnessCharacteristics
-        guard !characteristics.isEmpty else { return }
+    /// Update the local UI state only (no HomeKit write). Use during drag.
+    func setBrightnessLocally(for light: LightAccessory, value: Int) {
         let clamped = min(100, max(0, value))
-
-        // Optimistically update UI immediately
         if let index = availableLights.firstIndex(where: { $0.id == light.id }) {
             availableLights[index].brightness = clamped
         }
@@ -414,47 +315,22 @@ final class HomeKitManager: NSObject, ObservableObject {
                 widgets[index] = HomeKitWidget(id: widget.id, type: widget.type, light: updated)
             }
         }
+    }
 
-        // Write to all characteristics (handles groups)
+    /// Commit brightness to HomeKit hardware. Call on finger lift.
+    func commitBrightness(for light: LightAccessory, value: Int) {
+        let characteristics = light.allBrightnessCharacteristics
+        guard !characteristics.isEmpty else { return }
+        let clamped = min(100, max(0, value))
+
+        setBrightnessLocally(for: light, value: clamped)
+
         for characteristic in characteristics {
             characteristic.writeValue(clamped) { _ in }
         }
     }
-}
 
-// MARK: - HMHomeManagerDelegate
-
-extension HomeKitManager: HMHomeManagerDelegate {
-    nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
-        Task { @MainActor in
-            homes = manager.homes
-            // Auto-select the first home if none selected
-            if selectedHome == nil {
-                selectedHome = manager.primaryHome ?? manager.homes.first
-            }
-            discoverLights()
-        }
-    }
-}
-
-// MARK: - HMAccessoryDelegate
-
-extension HomeKitManager: HMAccessoryDelegate {
-    nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
-        Task { @MainActor in
-            // Update availableLights
-            if let index = availableLights.firstIndex(where: { $0.service == service }) {
-                if characteristic.characteristicType == HMCharacteristicTypePowerState,
-                   let value = characteristic.value as? Bool {
-                    availableLights[index].isOn = value
-                }
-                if characteristic.characteristicType == HMCharacteristicTypeBrightness,
-                   let value = characteristic.value as? Int {
-                    availableLights[index].brightness = value
-                }
-                // Propagate to widgets
-                updateWidgetState(for: availableLights[index])
-            }
-        }
+    func setBrightness(for light: LightAccessory, value: Int) {
+        commitBrightness(for: light, value: value)
     }
 }

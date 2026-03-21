@@ -252,29 +252,30 @@ struct LightDimmerCard: View {
 
                     DimmerBar(
                         brightness: light.brightness,
-                        isOn: light.isOn
-                    ) { newValue in
-                        manager.setBrightness(for: light, value: newValue)
-                    }
+                        isOn: light.isOn,
+                        onBrightnessDragged: { newValue in
+                            manager.setBrightnessLocally(for: light, value: newValue)
+                        },
+                        onBrightnessCommitted: { newValue in
+                            manager.commitBrightness(for: light, value: newValue)
+                        }
+                    )
 
                     // Brightness label to the right
-                    VStack(spacing: 4) {
+                    VStack(spacing: 2) {
                         Text(light.isOn ? "\(light.brightness)" : "—")
                             .font(.system(size: 36, weight: .light, design: .rounded))
+                            .monospacedDigit()
                             .foregroundColor(
                                 light.isOn ? DS.Color.accentAmber : DS.Color.textTertiary
                             )
-                        if light.isOn {
-                            Text("%")
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundColor(DS.Color.accentAmber.opacity(0.6))
-                        } else {
-                            Text("Off")
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundColor(DS.Color.textTertiary)
-                        }
+                        Text(light.isOn ? "%" : "Off")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundColor(
+                                light.isOn ? DS.Color.accentAmber.opacity(0.6) : DS.Color.textTertiary
+                            )
                     }
-                    .frame(minWidth: 50)
+                    .frame(width: 60)
 
                     Spacer()
                 }
@@ -288,15 +289,17 @@ struct LightDimmerCard: View {
 struct DimmerBar: View {
     var brightness: Int
     var isOn: Bool
-    var onBrightnessChanged: (Int) -> Void
+    var onBrightnessDragged: (Int) -> Void
+    var onBrightnessCommitted: (Int) -> Void
 
     @State private var isDragging = false
-    @State private var updateTask: Task<Void, Never>? = nil
-    
-    private let barWidth: CGFloat = 48
+    @State private var dragBrightness: Int = 0
+
+    private let barWidth: CGFloat = 64
     private let barHeight: CGFloat = 200
-    private let cornerRadius: CGFloat = 14
-    private var progress: Double { Double(brightness) / 100.0 }
+    private let cornerRadius: CGFloat = 8
+    private var displayBrightness: Int { isDragging ? dragBrightness : brightness }
+    private var progress: Double { Double(displayBrightness) / 100.0 }
     private let accent = DS.Color.accentAmber
 
     var body: some View {
@@ -328,7 +331,7 @@ struct DimmerBar: View {
                     .animation(isDragging ? nil : DS.Animation.smooth, value: progress)
 
                 // Glow overlay when on
-                if isOn && brightness > 0 {
+                if isOn && displayBrightness > 0 {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(accent.opacity(0.15 * progress))
                         .frame(height: fillHeight)
@@ -358,24 +361,17 @@ struct DimmerBar: View {
                     .onChanged { value in
                         guard isOn else { return }
                         isDragging = true
-                        
-                        // 1. Calculate the new brightness locally
                         let fraction = 1.0 - (value.location.y / height)
                         let clamped = min(1.0, max(0.01, fraction))
-                        let newBrightness = Int(clamped * 100)
-
-                        // 3. Debounce the HomeKit hardware call
-                        updateTask?.cancel()
-                        updateTask = Task {
-                            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second pause
-                            if !Task.isCancelled {
-                                onBrightnessChanged(newBrightness)
-                            }
-                        }
+                        dragBrightness = Int(clamped * 100)
+                        // Update UI only — no HomeKit write
+                        onBrightnessDragged(dragBrightness)
                     }
                     .onEnded { _ in
+                        let finalValue = dragBrightness
                         isDragging = false
-                        updateTask = nil
+                        // Commit to HomeKit on finger lift
+                        onBrightnessCommitted(finalValue)
                     }
             )
         }
