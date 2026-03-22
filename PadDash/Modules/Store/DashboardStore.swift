@@ -20,6 +20,15 @@ struct PersistedTimerEntry: Codable {
     let accentIndex: Int
 }
 
+// MARK: - Persisted AirPlay Entry
+
+struct PersistedAirPlayEntry: Codable, Identifiable {
+    let id: String              // Widget UUID string
+    let playlistID: String      // MusicItemID.rawValue
+    let playlistName: String    // Cached name for display before MusicKit loads
+    var customName: String?     // User-defined local rename
+}
+
 // MARK: - Dashboard Store
 
 /// Unified persistence layer for all dashboard state.
@@ -34,6 +43,7 @@ final class DashboardStore: ObservableObject {
         static let homeKitWidgets = "Store.homeKitWidgets"
         static let selectedHomeID = "Store.selectedHomeID"
         static let timerSlots = "Store.timerSlots"
+        static let airPlayWidgets = "Store.airPlayWidgets"
     }
 
     private let defaults = UserDefaults.standard
@@ -78,6 +88,22 @@ final class DashboardStore: ObservableObject {
     func loadTimerSlots() -> [PersistedTimerEntry] {
         guard let data = defaults.data(forKey: Keys.timerSlots),
               let entries = try? JSONDecoder().decode([PersistedTimerEntry].self, from: data) else {
+            return []
+        }
+        return entries
+    }
+
+    // MARK: - AirPlay Widgets
+
+    func saveAirPlayWidgets(_ entries: [PersistedAirPlayEntry]) {
+        if let data = try? JSONEncoder().encode(entries) {
+            defaults.set(data, forKey: Keys.airPlayWidgets)
+        }
+    }
+
+    func loadAirPlayWidgets() -> [PersistedAirPlayEntry] {
+        guard let data = defaults.data(forKey: Keys.airPlayWidgets),
+              let entries = try? JSONDecoder().decode([PersistedAirPlayEntry].self, from: data) else {
             return []
         }
         return entries

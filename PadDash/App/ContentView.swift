@@ -29,6 +29,7 @@ enum DashTab: String, CaseIterable {
 struct ContentView: View {
     @StateObject private var dashVM = DashboardVM()
     @StateObject private var homeKitManager = HomeKitManager()
+    @StateObject private var airPlayManager = AirPlayManager()
     @State private var activeTab: DashTab = .timers
     @Environment(\.scenePhase) private var scenePhase
 
@@ -105,7 +106,7 @@ struct ContentView: View {
             HomeKitDashboardView(manager: homeKitManager)
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
         case .airplay:
-            AirPlayPlaceholderView()
+            AirPlayDashboardView(manager: airPlayManager)
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
         }
     }

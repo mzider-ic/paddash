@@ -15,7 +15,7 @@ let project = Project(
             name: "PadDash",
             destinations: [.iPad],
             product: .app,
-            bundleId: "com.msz.StepWidget",
+            bundleId: "com.msz.PadDash",
             deploymentTargets: .iOS("16.0"),
             infoPlist: .extendingDefault(with: [
                 "UILaunchScreen": .dictionary([:]),
@@ -27,6 +27,8 @@ let project = Project(
                     .string("UIInterfaceOrientationLandscapeRight"),
                 ]),
                 "NSHomeKitUsageDescription": .string("PadDash needs HomeKit access to control your lights and other accessories."),
+                "NSAppleMusicUsageDescription": .string("PadDash needs access to your Apple Music library to play your playlists."),
+                "UIBackgroundModes": .array([.string("audio")]),
             ]),
             sources: ["PadDash/**/*.swift"],
             resources: ["PadDash/Assets.xcassets"],

@@ -53,6 +53,7 @@ final class HomeKitManager: NSObject, ObservableObject {
     func restoreSelectedHome() {
         guard let savedID = store.loadSelectedHomeID() else { return }
         selectedHome = homes.first { $0.uniqueIdentifier == savedID }
+        dumpAllCharacteristics(for: selectedHome!)
     }
 
     func restoreWidgets() {
@@ -152,10 +153,18 @@ final class HomeKitManager: NSObject, ObservableObject {
 
             // Discover ANY service that exposes humidity (covers dedicated sensors, thermostats, HomePods, etc.)
             for service in accessory.services {
+                
                 let hasHumidity = service.characteristics.contains {
                     $0.characteristicType == HMCharacteristicTypeCurrentRelativeHumidity
                 }
+                print(
+                    "Service Name = \(service.name) : " +
+                    service.characteristics
+                        .map(\.characteristicTypeName)
+                        .joined(separator: ", ")
+                )
                 guard hasHumidity else { continue }
+                
                 // Avoid duplicate entries when the same accessory exposes humidity on multiple services
                 let alreadyAdded = discoveredHumidity.contains { $0.service.uniqueIdentifier == service.uniqueIdentifier }
                 guard !alreadyAdded else { continue }
@@ -589,4 +598,69 @@ final class HomeKitManager: NSObject, ObservableObject {
         commitBrightness(for: light, value: value)
     }
 }
+extension HomeKitManager {
+    func dumpAllCharacteristics(for home: HMHome) {
+        for accessory in home.accessories {
+            print("🏠 Accessory: \(accessory.name)")
+            for service in accessory.services {
+                print("   🛠 Service: \(service.name)")
+                for char in service.characteristics {
+                    print("      🔹 Name: \(char.localizedDescription)")
+                    print("         Type: \(char.characteristicTypeName)")
+                    print("         UUID: \(char.characteristicType)")
+                    print("         Value: \(String(describing: char.value))")
+                }
+            }
+        }
+    }
+}
 
+extension HMCharacteristic {
+    var characteristicTypeName: String {
+        switch self.characteristicType {
+        // --- Light and Color ---
+        case HMCharacteristicTypePowerState: return "HMCharacteristicTypePowerState"
+        case HMCharacteristicTypeHue: return "HMCharacteristicTypeHue"
+        case HMCharacteristicTypeSaturation: return "HMCharacteristicTypeSaturation"
+        case HMCharacteristicTypeBrightness: return "HMCharacteristicTypeBrightness"
+        case HMCharacteristicTypeColorTemperature: return "HMCharacteristicTypeColorTemperature"
+
+        // --- Climate and Sensors ---
+        case HMCharacteristicTypeCurrentTemperature: return "HMCharacteristicTypeCurrentTemperature"
+        case HMCharacteristicTypeTargetTemperature: return "HMCharacteristicTypeTargetTemperature"
+        case HMCharacteristicTypeCurrentRelativeHumidity: return "HMCharacteristicTypeCurrentRelativeHumidity"
+        case HMCharacteristicTypeTargetRelativeHumidity: return "HMCharacteristicTypeTargetRelativeHumidity"
+        case HMCharacteristicTypeTemperatureUnits: return "HMCharacteristicTypeTemperatureUnits"
+        case HMCharacteristicTypeCurrentHeatingCooling: return "HMCharacteristicTypeCurrentHeatingCooling"
+        case HMCharacteristicTypeTargetHeatingCooling: return "HMCharacteristicTypeTargetHeatingCooling"
+        case HMCharacteristicTypeAirQuality: return "HMCharacteristicTypeAirQuality"
+        case HMCharacteristicTypeCarbonDioxideLevel: return "HMCharacteristicTypeCarbonDioxideLevel"
+
+        // --- Security and Access ---
+        case HMCharacteristicTypeCurrentDoorState: return "HMCharacteristicTypeCurrentDoorState"
+        case HMCharacteristicTypeTargetDoorState: return "HMCharacteristicTypeTargetDoorState"
+        case HMCharacteristicTypeObstructionDetected: return "HMCharacteristicTypeObstructionDetected"
+        case HMCharacteristicTypeCurrentLockMechanismState: return "HMCharacteristicTypeCurrentLockMechanismState"
+        case HMCharacteristicTypeTargetLockMechanismState: return "HMCharacteristicTypeTargetLockMechanismState"
+        case HMCharacteristicTypeMotionDetected: return "HMCharacteristicTypeMotionDetected"
+        case HMCharacteristicTypeContactState: return "HMCharacteristicTypeContactState"
+
+        // --- Device Information ---
+        case HMCharacteristicTypeManufacturer: return "HMCharacteristicTypeManufacturer"
+        case HMCharacteristicTypeModel: return "HMCharacteristicTypeModel"
+        case HMCharacteristicTypeSerialNumber: return "HMCharacteristicTypeSerialNumber"
+        case HMCharacteristicTypeVersion: return "HMCharacteristicTypeVersion"
+
+        // --- Power and Status ---
+        case HMCharacteristicTypeBatteryLevel: return "HMCharacteristicTypeBatteryLevel"
+        case HMCharacteristicTypeChargingState: return "HMCharacteristicTypeChargingState"
+        case HMCharacteristicTypeStatusLowBattery: return "HMCharacteristicTypeStatusLowBattery"
+        case HMCharacteristicTypeStatusFault: return "HMCharacteristicTypeStatusFault"
+        case HMCharacteristicTypeOutletInUse: return "HMCharacteristicTypeOutletInUse"
+
+        default:
+            // This handles custom vendor types or new types Apple adds later
+            return "Unknown/Custom (\(self.characteristicType))"
+        }
+    }
+}
