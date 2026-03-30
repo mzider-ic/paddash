@@ -2,6 +2,8 @@ import SwiftUI
 import MusicKit
 import AVKit
 import UniformTypeIdentifiers
+import CoreImage
+import UIKit
 
 // MARK: - AirPlay Dashboard View
 
@@ -303,142 +305,146 @@ struct ExpandedPlayerView: View {
     private let accent = DS.Color.accentMint
 
     var body: some View {
-        VStack(spacing: DS.Space.lg) {
+        ZStack {
+            AlbumArtShimmerBackground(artwork: manager.currentArtwork, accent: accent)
 
-            // Top bar
-            HStack {
-                Button {
-                    manager.collapseWidget()
-                } label: {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(DS.Color.textSecondary)
-                        .padding(10)
-                        .background(DS.Color.surfaceRaised)
-                        .clipShape(Circle())
-                }
+            VStack(spacing: DS.Space.lg) {
 
-                Spacer()
-
-                Text(widget.displayName)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundColor(DS.Color.textSecondary)
-
-                Spacer()
-
-                AirPlayRouteButton()
-                    .frame(width: 36, height: 36)
-            }
-
-            Spacer()
-
-            // Large album artwork
-            if let artwork = manager.currentArtwork {
-                ArtworkImage(artwork, width: 300, height: 300)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-                    .shadow(color: accent.opacity(0.3), radius: 30, x: 0, y: 10)
-            } else {
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .fill(DS.Color.surfaceRaised)
-                    .frame(width: 300, height: 300)
-                    .overlay(
-                        Image(systemName: "music.note")
-                            .font(.system(size: 80, weight: .ultraLight))
-                            .foregroundColor(accent.opacity(0.3))
-                    )
-            }
-
-            // Track info
-            VStack(spacing: 4) {
-                Text(manager.currentTrackTitle ?? "Not Playing")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundColor(DS.Color.textPrimary)
-                    .lineLimit(1)
-
-                Text(manager.currentArtistName ?? "")
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .foregroundColor(DS.Color.textSecondary)
-                    .lineLimit(1)
-            }
-
-            // Progress bar with timestamps
-            VStack(spacing: 4) {
-                TrackProgressBar(
-                    progress: manager.totalDuration > 0
-                        ? manager.currentPlaybackTime / manager.totalDuration
-                        : 0,
-                    accent: accent
-                )
-                .frame(height: 6)
-
+                // Top bar
                 HStack {
-                    Text(formatTime(manager.currentPlaybackTime))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(DS.Color.textTertiary)
+                    Button {
+                        manager.collapseWidget()
+                    } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(DS.Color.textSecondary)
+                            .padding(10)
+                            .background(DS.Color.surfaceRaised.opacity(0.72))
+                            .clipShape(Circle())
+                    }
+
                     Spacer()
-                    Text(formatTime(manager.totalDuration))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(DS.Color.textTertiary)
-                }
-            }
-            .padding(.horizontal, DS.Space.xl)
 
-            // Large playback controls
-            HStack(spacing: DS.Space.xl) {
-                Button { manager.skipBackward() } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.system(size: 28, weight: .semibold))
+                    Text(widget.displayName)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundColor(DS.Color.textSecondary)
-                        .frame(width: 56, height: 56)
+
+                    Spacer()
+
+                    AirPlayRouteButton()
+                        .frame(width: 36, height: 36)
                 }
 
-                Button { manager.togglePlayPause() } label: {
-                    ZStack {
-                        Circle()
-                            .fill(accent)
-                            .frame(width: 80, height: 80)
-                            .shadow(color: accent.opacity(0.45), radius: 16, x: 0, y: 6)
+                Spacer()
 
-                        Image(systemName: manager.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 32, weight: .semibold))
-                            .foregroundColor(DS.Color.background)
-                            .offset(x: manager.isPlaying ? 0 : 3)
+                // Large album artwork
+                if let artwork = manager.currentArtwork {
+                    ArtworkImage(artwork, width: 300, height: 300)
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                        .shadow(color: accent.opacity(0.3), radius: 30, x: 0, y: 10)
+                } else {
+                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                        .fill(DS.Color.surfaceRaised)
+                        .frame(width: 300, height: 300)
+                        .overlay(
+                            Image(systemName: "music.note")
+                                .font(.system(size: 80, weight: .ultraLight))
+                                .foregroundColor(accent.opacity(0.3))
+                        )
+                }
+
+                // Track info
+                VStack(spacing: 4) {
+                    Text(manager.currentTrackTitle ?? "Not Playing")
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .foregroundColor(DS.Color.textPrimary)
+                        .lineLimit(1)
+
+                    Text(manager.currentArtistName ?? "")
+                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .foregroundColor(DS.Color.textSecondary)
+                        .lineLimit(1)
+                }
+
+                // Progress bar with timestamps
+                VStack(spacing: 4) {
+                    TrackProgressBar(
+                        progress: manager.totalDuration > 0
+                            ? manager.currentPlaybackTime / manager.totalDuration
+                            : 0,
+                        accent: accent
+                    )
+                    .frame(height: 6)
+
+                    HStack {
+                        Text(formatTime(manager.currentPlaybackTime))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(DS.Color.textTertiary)
+                        Spacer()
+                        Text(formatTime(manager.totalDuration))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(DS.Color.textTertiary)
+                    }
+                }
+                .padding(.horizontal, DS.Space.xl)
+
+                // Large playback controls
+                HStack(spacing: DS.Space.xl) {
+                    Button { manager.skipBackward() } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundColor(DS.Color.textSecondary)
+                            .frame(width: 56, height: 56)
+                    }
+
+                    Button { manager.togglePlayPause() } label: {
+                        ZStack {
+                            Circle()
+                                .fill(accent)
+                                .frame(width: 80, height: 80)
+                                .shadow(color: accent.opacity(0.45), radius: 16, x: 0, y: 6)
+
+                            Image(systemName: manager.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 32, weight: .semibold))
+                                .foregroundColor(DS.Color.background)
+                                .offset(x: manager.isPlaying ? 0 : 3)
+                        }
+                    }
+
+                    Button { manager.skipForward() } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundColor(DS.Color.textSecondary)
+                            .frame(width: 56, height: 56)
                     }
                 }
 
-                Button { manager.skipForward() } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(DS.Color.textSecondary)
-                        .frame(width: 56, height: 56)
+                // Shuffle & Repeat controls
+                HStack(spacing: DS.Space.xl) {
+                    Button { manager.toggleShuffle() } label: {
+                        Image(systemName: "shuffle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(manager.shuffleMode == .songs ? accent : DS.Color.textTertiary)
+                            .frame(width: 44, height: 44)
+                            .background(manager.shuffleMode == .songs ? accent.opacity(0.15) : Color.clear)
+                            .clipShape(Circle())
+                    }
+
+                    Button { manager.cycleRepeatMode() } label: {
+                        Image(systemName: repeatIconName)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(manager.repeatMode != .none ? accent : DS.Color.textTertiary)
+                            .frame(width: 44, height: 44)
+                            .background(manager.repeatMode != .none ? accent.opacity(0.15) : Color.clear)
+                            .clipShape(Circle())
+                    }
                 }
+
+                Spacer()
             }
-
-            // Shuffle & Repeat controls
-            HStack(spacing: DS.Space.xl) {
-                Button { manager.toggleShuffle() } label: {
-                    Image(systemName: "shuffle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(manager.shuffleMode == .songs ? accent : DS.Color.textTertiary)
-                        .frame(width: 44, height: 44)
-                        .background(manager.shuffleMode == .songs ? accent.opacity(0.15) : Color.clear)
-                        .clipShape(Circle())
-                }
-
-                Button { manager.cycleRepeatMode() } label: {
-                    Image(systemName: repeatIconName)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(manager.repeatMode != .none ? accent : DS.Color.textTertiary)
-                        .frame(width: 44, height: 44)
-                        .background(manager.repeatMode != .none ? accent.opacity(0.15) : Color.clear)
-                        .clipShape(Circle())
-                }
-            }
-
-            Spacer()
+            .padding(DS.Space.lg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(DS.Space.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var repeatIconName: String {
@@ -457,6 +463,222 @@ struct ExpandedPlayerView: View {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Album Art Shimmer Background
+
+private struct AlbumArtShimmerBackground: View {
+    let artwork: Artwork?
+    let accent: Color
+
+    @State private var palette: [Color] = [
+        DS.Color.background,
+        DS.Color.accentMint.opacity(0.35),
+        DS.Color.accentBlue.opacity(0.22),
+    ]
+
+    var body: some View {
+        GeometryReader { proxy in
+            TimelineView(.animation) { timeline in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            palette[safe: 0] ?? DS.Color.background,
+                            palette[safe: 1] ?? accent.opacity(0.28),
+                            palette[safe: 2] ?? DS.Color.background,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+
+                    shimmerOrb(
+                        color: (palette[safe: 1] ?? accent).opacity(0.75),
+                        size: proxy.size.width * 0.78,
+                        x: proxy.size.width * (0.2 + 0.18 * sin(time * 0.22)),
+                        y: proxy.size.height * (0.18 + 0.12 * cos(time * 0.18))
+                    )
+
+                    shimmerOrb(
+                        color: (palette[safe: 2] ?? accent).opacity(0.65),
+                        size: proxy.size.width * 0.92,
+                        x: proxy.size.width * (0.78 + 0.14 * cos(time * 0.17)),
+                        y: proxy.size.height * (0.46 + 0.16 * sin(time * 0.21))
+                    )
+
+                    shimmerOrb(
+                        color: (palette[safe: 0] ?? accent).opacity(0.48),
+                        size: proxy.size.width * 0.66,
+                        x: proxy.size.width * (0.48 + 0.22 * sin(time * 0.14 + 1.4)),
+                        y: proxy.size.height * (0.82 + 0.08 * cos(time * 0.24))
+                    )
+
+                    Rectangle()
+                        .fill(.ultraThinMaterial.opacity(0.36))
+                }
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            DS.Color.background.opacity(0.34),
+                            .clear,
+                            DS.Color.background.opacity(0.52),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .ignoresSafeArea()
+            }
+        }
+        .task(id: artwork?.backgroundKey) {
+            let extracted = await AlbumArtPaletteExtractor.palette(from: artwork)
+            if !extracted.isEmpty {
+                withAnimation(.easeInOut(duration: 0.8)) {
+                    palette = extracted
+                }
+            }
+        }
+    }
+
+    private func shimmerOrb(color: Color, size: CGFloat, x: CGFloat, y: CGFloat) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .blur(radius: size * 0.18)
+            .position(x: x, y: y)
+            .blendMode(.plusLighter)
+    }
+}
+
+@MainActor
+private enum AlbumArtPaletteExtractor {
+    static func palette(from artwork: Artwork?) async -> [Color] {
+        guard let artwork,
+              let url = artwork.url(width: 160, height: 160) else {
+            return fallbackPalette
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let image = UIImage(data: data),
+                  let colors = extractPalette(from: image),
+                  !colors.isEmpty else {
+                return fallbackPalette
+            }
+            return colors
+        } catch {
+            return fallbackPalette
+        }
+    }
+
+    private static var fallbackPalette: [Color] {
+        [
+            DS.Color.background,
+            DS.Color.accentMint.opacity(0.34),
+            DS.Color.accentBlue.opacity(0.22),
+        ]
+    }
+
+    private static func extractPalette(from image: UIImage) -> [Color]? {
+        let renderSize = CGSize(width: 40, height: 40)
+        let renderer = UIGraphicsImageRenderer(size: renderSize)
+        let normalized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: renderSize))
+        }
+
+        guard let cgImage = normalized.cgImage,
+              let data = cgImage.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else {
+            return nil
+        }
+
+        struct Bucket {
+            var score: Double = 0
+            var red: Double = 0
+            var green: Double = 0
+            var blue: Double = 0
+        }
+
+        var buckets: [Int: Bucket] = [:]
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerPixel = cgImage.bitsPerPixel / 8
+        let bytesPerRow = cgImage.bytesPerRow
+
+        for y in stride(from: 0, to: height, by: 2) {
+            for x in stride(from: 0, to: width, by: 2) {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                let red = Double(bytes[offset]) / 255.0
+                let green = Double(bytes[offset + 1]) / 255.0
+                let blue = Double(bytes[offset + 2]) / 255.0
+                let alpha = bytesPerPixel > 3 ? Double(bytes[offset + 3]) / 255.0 : 1.0
+
+                guard alpha > 0.6 else { continue }
+
+                var hue: CGFloat = 0
+                var saturation: CGFloat = 0
+                var brightness: CGFloat = 0
+                UIColor(red: red, green: green, blue: blue, alpha: alpha)
+                    .getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
+
+                guard brightness > 0.14 else { continue }
+
+                let hueBucket = Int(hue * 24)
+                let saturationBucket = Int(saturation * 5)
+                let brightnessBucket = Int(brightness * 5)
+                let key = hueBucket * 100 + saturationBucket * 10 + brightnessBucket
+
+                let weight = Double((saturation + brightness) * alpha)
+                var bucket = buckets[key, default: Bucket()]
+                bucket.score += weight
+                bucket.red += red * weight
+                bucket.green += green * weight
+                bucket.blue += blue * weight
+                buckets[key] = bucket
+            }
+        }
+
+        let palette = buckets.values
+            .sorted { $0.score > $1.score }
+            .prefix(3)
+            .compactMap { bucket -> Color? in
+                guard bucket.score > 0 else { return nil }
+                return Color(
+                    red: bucket.red / bucket.score,
+                    green: bucket.green / bucket.score,
+                    blue: bucket.blue / bucket.score
+                )
+            }
+
+        guard !palette.isEmpty else { return nil }
+
+        if palette.count == 1 {
+            return [palette[0].opacity(0.28), palette[0].opacity(0.48), palette[0].opacity(0.22)]
+        }
+
+        if palette.count == 2 {
+            return [palette[0].opacity(0.24), palette[1].opacity(0.48), palette[0].opacity(0.18)]
+        }
+
+        return [
+            palette[0].opacity(0.22),
+            palette[1].opacity(0.5),
+            palette[2].opacity(0.34),
+        ]
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+private extension Artwork {
+    var backgroundKey: String? {
+        url(width: 160, height: 160)?.absoluteString
     }
 }
 
