@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct HomeKitDashboardView: View {
     @ObservedObject var manager: HomeKitManager
     @State private var draggedWidget: HomeKitWidget?
+    @State private var widgetPendingRemoval: HomeKitWidget?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,7 +20,7 @@ struct HomeKitDashboardView: View {
             Group {
                 if manager.isLoading {
                     loadingView
-                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty && manager.availableThermostats.isEmpty && manager.availableGarageDoors.isEmpty {
+                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty && manager.availableThermostats.isEmpty && manager.availableGarageDoors.isEmpty && manager.availableLocks.isEmpty && manager.availableFans.isEmpty && manager.availableSwitches.isEmpty && manager.availablePositionDevices.isEmpty && manager.availableValves.isEmpty && manager.availableSecuritySystems.isEmpty && manager.availableSpeakers.isEmpty && manager.availableSensors.isEmpty {
                     if let message = manager.statusMessage {
                         emptyStateView(message: message)
                     } else {
@@ -47,6 +48,26 @@ struct HomeKitDashboardView: View {
             Button("Cancel", role: .cancel) { manager.cancelRename() }
         } message: {
             Text("Enter a custom name for this widget.")
+        }
+        .alert(
+            "Remove Widget?",
+            isPresented: Binding(
+                get: { widgetPendingRemoval != nil },
+                set: { if !$0 { widgetPendingRemoval = nil } }
+            ),
+            presenting: widgetPendingRemoval
+        ) { widget in
+            Button("Remove", role: .destructive) {
+                withAnimation(DS.Animation.snappy) {
+                    manager.removeWidget(widget)
+                    widgetPendingRemoval = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                widgetPendingRemoval = nil
+            }
+        } message: { widget in
+            Text("Remove \"\(widget.displayName)\" from the dashboard?")
         }
     }
 
@@ -181,9 +202,7 @@ struct HomeKitDashboardView: View {
                                 Label("Rename", systemImage: "pencil")
                             }
                             Button(role: .destructive) {
-                                withAnimation(DS.Animation.snappy) {
-                                    manager.removeWidget(widget)
-                                }
+                                widgetPendingRemoval = widget
                             } label: {
                                 Label("Remove", systemImage: "trash")
                             }
@@ -216,31 +235,34 @@ struct HomeKitDashboardView: View {
 
     @ViewBuilder
     private func widgetCard(for widget: HomeKitWidget) -> some View {
+        let remove = { widgetPendingRemoval = widget }
         switch widget.type {
         case .lightDimmer:
-            LightDimmerCard(
-                widget: widget,
-                manager: manager,
-                onRemove: { manager.removeWidget(widget) }
-            )
+            LightDimmerCard(widget: widget, manager: manager, onRemove: remove)
         case .thermostat:
-            ThermostatCard(
-                widget: widget,
-                manager: manager,
-                onRemove: { manager.removeWidget(widget) }
-            )
+            ThermostatCard(widget: widget, manager: manager, onRemove: remove)
         case .humidity:
-            HumidityCard(
-                widget: widget,
-                manager: manager,
-                onRemove: { manager.removeWidget(widget) }
-            )
+            HumidityCard(widget: widget, manager: manager, onRemove: remove)
         case .garageDoor:
-            GarageDoorCard(
-                widget: widget,
-                manager: manager,
-                onRemove: { manager.removeWidget(widget) }
-            )
+            GarageDoorCard(widget: widget, manager: manager, onRemove: remove)
+        case .lock:
+            LockCard(widget: widget, manager: manager, onRemove: remove)
+        case .fan:
+            FanCard(widget: widget, manager: manager, onRemove: remove)
+        case .switchToggle, .outlet:
+            SwitchCard(widget: widget, manager: manager, onRemove: remove)
+        case .windowCovering, .door, .window:
+            PositionCard(widget: widget, manager: manager, onRemove: remove)
+        case .valve:
+            ValveCard(widget: widget, manager: manager, onRemove: remove)
+        case .securitySystem:
+            SecuritySystemCard(widget: widget, manager: manager, onRemove: remove)
+        case .speaker:
+            SpeakerCard(widget: widget, manager: manager, onRemove: remove)
+        case .temperatureSensor, .motionSensor, .contactSensor, .leakSensor,
+             .airQualitySensor, .carbonMonoxideSensor, .carbonDioxideSensor,
+             .occupancySensor, .lightSensor, .smokeSensor:
+            SensorCard(widget: widget, manager: manager, onRemove: remove)
         }
     }
 }
@@ -739,18 +761,30 @@ struct WidgetTypePickerSheet: View {
                 DS.Color.background.ignoresSafeArea()
 
                 ScrollView {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(), spacing: DS.Space.md),
-                            GridItem(.flexible(), spacing: DS.Space.md),
-                        ],
-                        spacing: DS.Space.md
-                    ) {
-                        ForEach(HomeKitWidgetType.allCases) { type in
-                            Button {
-                                manager.selectWidgetType(type)
-                            } label: {
-                                widgetTypeCard(type)
+                    LazyVStack(alignment: .leading, spacing: DS.Space.lg) {
+                        ForEach(HomeKitWidgetType.groupedByCategory, id: \.category) { group in
+                            VStack(alignment: .leading, spacing: DS.Space.sm) {
+                                Text(group.category.rawValue)
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(DS.Color.textSecondary)
+                                    .textCase(.uppercase)
+                                    .padding(.horizontal, 4)
+
+                                LazyVGrid(
+                                    columns: [
+                                        GridItem(.flexible(), spacing: DS.Space.md),
+                                        GridItem(.flexible(), spacing: DS.Space.md),
+                                    ],
+                                    spacing: DS.Space.md
+                                ) {
+                                    ForEach(group.types) { type in
+                                        Button {
+                                            manager.selectWidgetType(type)
+                                        } label: {
+                                            widgetTypeCard(type)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -805,15 +839,57 @@ struct AccessoryPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
-    private var isPickingThermostat: Bool {
-        manager.pendingWidgetType == .thermostat
+    private var pickingType: HomeKitWidgetType? { manager.pendingWidgetType }
+
+    // Generic accessory list for the current pending type
+    private var accessoryItems: [AccessoryItem] {
+        guard let type = pickingType else { return [] }
+        switch type {
+        case .lightDimmer:
+            return manager.unaddedLights.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: $0.iconName, isGroup: $0.isGroup, accent: DS.Color.accentAmber) }
+        case .thermostat:
+            return manager.unaddedThermostats.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "thermometer.medium", accent: DS.Color.accentBlue) }
+        case .humidity:
+            return []
+        case .garageDoor:
+            return manager.unaddedGarageDoors.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "door.garage.closed", accent: DS.Color.danger) }
+        case .lock:
+            return manager.unaddedLocks.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "lock.fill", accent: DS.Color.accentPurple) }
+        case .fan:
+            return manager.unaddedFans.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "fan.fill", accent: DS.Color.accentGreen) }
+        case .switchToggle:
+            return manager.unaddedSwitches.filter { $0.kind == .toggle }.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "switch.2", accent: DS.Color.accentAmber) }
+        case .outlet:
+            return manager.unaddedSwitches.filter { $0.kind == .outlet }.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "powerplug.fill", accent: DS.Color.accentAmber) }
+        case .windowCovering:
+            return manager.unaddedPositionDevices.filter { $0.kind == .windowCovering }.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "blinds.vertical.closed", accent: DS.Color.accentIndigo) }
+        case .door:
+            return manager.unaddedPositionDevices.filter { $0.kind == .door }.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "door.left.hand.closed", accent: DS.Color.accentIndigo) }
+        case .window:
+            return manager.unaddedPositionDevices.filter { $0.kind == .window }.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "window.vertical.closed", accent: DS.Color.accentIndigo) }
+        case .valve:
+            return manager.unaddedValves.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "spigot.fill", accent: DS.Color.accentGreen) }
+        case .securitySystem:
+            return manager.unaddedSecuritySystems.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "shield.lefthalf.filled", accent: DS.Color.accentPurple) }
+        case .speaker:
+            return manager.unaddedSpeakers.map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: "speaker.wave.2.fill", accent: DS.Color.accentBlue) }
+        case .temperatureSensor, .motionSensor, .contactSensor, .leakSensor,
+             .airQualitySensor, .carbonMonoxideSensor, .carbonDioxideSensor,
+             .occupancySensor, .lightSensor, .smokeSensor:
+            guard let sensorType = type.sensorType else { return [] }
+            return manager.unaddedSensors(for: sensorType).map { AccessoryItem(id: $0.id, name: $0.name, room: $0.roomName, icon: sensorType.icon, accent: DS.Color.accentTeal) }
+        }
     }
 
-    private var isPickingGarageDoor: Bool {
-        manager.pendingWidgetType == .garageDoor
+    private var filteredItems: [AccessoryItem] {
+        guard !searchText.isEmpty else { return accessoryItems }
+        return accessoryItems.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.room.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
-    // Light filtering
+    // Special handling: lights get grouped by room
     private var filteredLightGroups: [(room: String, lights: [LightAccessory])] {
         let groups = manager.unaddedLightsGroupedByRoom
         guard !searchText.isEmpty else { return groups }
@@ -826,37 +902,12 @@ struct AccessoryPickerSheet: View {
         }
     }
 
-    // Thermostat filtering
-    private var filteredThermostats: [ThermostatAccessory] {
-        let list = manager.unaddedThermostats
-        guard !searchText.isEmpty else { return list }
-        return list.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.roomName.localizedCaseInsensitiveContains(searchText)
-        }
-    }
-
-    // Garage door filtering
-    private var filteredGarageDoors: [GarageDoorAccessory] {
-        let list = manager.unaddedGarageDoors
-        guard !searchText.isEmpty else { return list }
-        return list.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.roomName.localizedCaseInsensitiveContains(searchText)
-        }
-    }
-
     private var hasResults: Bool {
-        if isPickingGarageDoor { return !filteredGarageDoors.isEmpty }
-        if isPickingThermostat { return !filteredThermostats.isEmpty }
-        return !filteredLightGroups.isEmpty
+        if pickingType == .lightDimmer { return !filteredLightGroups.isEmpty }
+        return !filteredItems.isEmpty
     }
 
-    private var isEmpty: Bool {
-        if isPickingGarageDoor { return manager.unaddedGarageDoors.isEmpty }
-        if isPickingThermostat { return manager.unaddedThermostats.isEmpty }
-        return manager.unaddedLights.isEmpty
-    }
+    private var isEmpty: Bool { accessoryItems.isEmpty }
 
     var body: some View {
         NavigationView {
@@ -866,13 +917,13 @@ struct AccessoryPickerSheet: View {
                 if isEmpty {
                     VStack(spacing: DS.Space.md) {
                         Spacer()
-                        Image(systemName: emptyStateIcon)
+                        Image(systemName: pickingType?.icon ?? "questionmark")
                             .font(.system(size: 48, weight: .thin))
-                            .foregroundColor(DS.Color.accentAmber.opacity(0.5))
-                        Text(emptyStateTitle)
+                            .foregroundColor((pickingType?.accent ?? DS.Color.accentAmber).opacity(0.5))
+                        Text("No Available \(pickingType?.displayName ?? "Accessories")")
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .foregroundColor(DS.Color.textPrimary)
-                        Text(emptyStateMessage)
+                        Text("No matching devices were found, or all have been added.")
                             .font(.system(size: 14, weight: .regular, design: .rounded))
                             .foregroundColor(DS.Color.textSecondary)
                             .multilineTextAlignment(.center)
@@ -909,12 +960,10 @@ struct AccessoryPickerSheet: View {
 
                         if hasResults {
                             ScrollView {
-                                if isPickingGarageDoor {
-                                    garageDoorList
-                                } else if isPickingThermostat {
-                                    thermostatList
-                                } else {
+                                if pickingType == .lightDimmer {
                                     lightList
+                                } else {
+                                    genericList
                                 }
                             }
                         } else {
@@ -933,7 +982,7 @@ struct AccessoryPickerSheet: View {
                     }
                 }
             }
-            .navigationTitle(pickerTitle)
+            .navigationTitle("Choose \(pickingType?.displayName ?? "Accessory")")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -947,7 +996,7 @@ struct AccessoryPickerSheet: View {
         }
     }
 
-    // MARK: - Light List
+    // MARK: - Light List (grouped by room)
 
     private var lightList: some View {
         LazyVStack(spacing: DS.Space.md, pinnedViews: .sectionHeaders) {
@@ -971,17 +1020,17 @@ struct AccessoryPickerSheet: View {
         .padding(.bottom, DS.Space.xl)
     }
 
-    // MARK: - Thermostat List
+    // MARK: - Generic Accessory List
 
-    private var thermostatList: some View {
+    private var genericList: some View {
         LazyVStack(spacing: DS.Space.md) {
-            ForEach(filteredThermostats) { thermostat in
+            ForEach(filteredItems) { item in
                 Button {
                     withAnimation(DS.Animation.snappy) {
-                        manager.addThermostatWidget(for: thermostat)
+                        addAccessory(item)
                     }
                 } label: {
-                    accessoryRow(name: thermostat.name, room: thermostat.roomName, icon: "thermometer.medium", isGroup: false, accent: DS.Color.accentBlue)
+                    accessoryRow(name: item.name, room: item.room, icon: item.icon, isGroup: item.isGroup, accent: item.accent)
                 }
             }
         }
@@ -989,52 +1038,68 @@ struct AccessoryPickerSheet: View {
         .padding(.bottom, DS.Space.xl)
     }
 
-    // MARK: - Garage Door List
+    // MARK: - Add Accessory by Type
 
-    private var garageDoorList: some View {
-        LazyVStack(spacing: DS.Space.md) {
-            ForEach(filteredGarageDoors) { garageDoor in
-                Button {
-                    withAnimation(DS.Animation.snappy) {
-                        manager.addGarageDoorWidget(for: garageDoor)
-                    }
-                } label: {
-                    accessoryRow(name: garageDoor.name, room: garageDoor.roomName, icon: "door.garage.closed", isGroup: false, accent: DS.Color.danger)
-                }
+    private func addAccessory(_ item: AccessoryItem) {
+        guard let type = pickingType else { return }
+        switch type {
+        case .thermostat:
+            if let acc = manager.unaddedThermostats.first(where: { $0.id == item.id }) {
+                manager.addThermostatWidget(for: acc)
             }
+        case .garageDoor:
+            if let acc = manager.unaddedGarageDoors.first(where: { $0.id == item.id }) {
+                manager.addGarageDoorWidget(for: acc)
+            }
+        case .lock:
+            if let acc = manager.unaddedLocks.first(where: { $0.id == item.id }) {
+                manager.addLockWidget(for: acc)
+            }
+        case .fan:
+            if let acc = manager.unaddedFans.first(where: { $0.id == item.id }) {
+                manager.addFanWidget(for: acc)
+            }
+        case .switchToggle:
+            if let acc = manager.unaddedSwitches.first(where: { $0.id == item.id && $0.kind == .toggle }) {
+                manager.addSwitchWidget(for: acc)
+            }
+        case .outlet:
+            if let acc = manager.unaddedSwitches.first(where: { $0.id == item.id && $0.kind == .outlet }) {
+                manager.addSwitchWidget(for: acc)
+            }
+        case .windowCovering:
+            if let acc = manager.unaddedPositionDevices.first(where: { $0.id == item.id && $0.kind == .windowCovering }) {
+                manager.addPositionWidget(for: acc)
+            }
+        case .door:
+            if let acc = manager.unaddedPositionDevices.first(where: { $0.id == item.id && $0.kind == .door }) {
+                manager.addPositionWidget(for: acc)
+            }
+        case .window:
+            if let acc = manager.unaddedPositionDevices.first(where: { $0.id == item.id && $0.kind == .window }) {
+                manager.addPositionWidget(for: acc)
+            }
+        case .valve:
+            if let acc = manager.unaddedValves.first(where: { $0.id == item.id }) {
+                manager.addValveWidget(for: acc)
+            }
+        case .securitySystem:
+            if let acc = manager.unaddedSecuritySystems.first(where: { $0.id == item.id }) {
+                manager.addSecuritySystemWidget(for: acc)
+            }
+        case .speaker:
+            if let acc = manager.unaddedSpeakers.first(where: { $0.id == item.id }) {
+                manager.addSpeakerWidget(for: acc)
+            }
+        case .temperatureSensor, .motionSensor, .contactSensor, .leakSensor,
+             .airQualitySensor, .carbonMonoxideSensor, .carbonDioxideSensor,
+             .occupancySensor, .lightSensor, .smokeSensor:
+            if let acc = manager.availableSensors.first(where: { $0.id == item.id }) {
+                manager.addSensorWidget(for: acc)
+            }
+        case .humidity, .lightDimmer:
+            break // Handled by lightList
         }
-        .padding(.horizontal, DS.Space.lg)
-        .padding(.bottom, DS.Space.xl)
-    }
-
-    // MARK: - Picker Helpers
-
-    private var pickerTitle: String {
-        if isPickingGarageDoor { return "Choose a Garage Door" }
-        if isPickingThermostat { return "Choose a Thermostat" }
-        return "Choose a Light"
-    }
-
-    private var emptyStateIcon: String {
-        if isPickingGarageDoor { return "door.garage.closed" }
-        if isPickingThermostat { return "thermometer.medium.slash" }
-        return "lightbulb.slash"
-    }
-
-    private var emptyStateTitle: String {
-        if isPickingGarageDoor { return "No Available Garage Doors" }
-        if isPickingThermostat { return "No Available Thermostats" }
-        return "No Available Lights"
-    }
-
-    private var emptyStateMessage: String {
-        if isPickingGarageDoor {
-            return "No garage doors were found in this home, or all have been added."
-        }
-        if isPickingThermostat {
-            return "No thermostats were found in this home, or all have been added."
-        }
-        return "All discovered lights have already been added as widgets, or no lights were found in this home."
     }
 
     // MARK: - Shared Components
@@ -1095,4 +1160,15 @@ struct AccessoryPickerSheet: View {
                 .stroke(DS.Color.border, lineWidth: 1)
         )
     }
+}
+
+// MARK: - Accessory Item (for generic picker)
+
+private struct AccessoryItem: Identifiable {
+    let id: UUID
+    let name: String
+    let room: String
+    let icon: String
+    var isGroup: Bool = false
+    let accent: Color
 }

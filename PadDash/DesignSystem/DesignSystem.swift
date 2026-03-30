@@ -21,6 +21,11 @@ enum DS {
         static let accentMint       = SwiftUI.Color(hex: "#3DFFD0")
         static let accentAmber      = SwiftUI.Color(hex: "#FFB347")
 
+        static let accentPurple     = SwiftUI.Color(hex: "#B388FF")
+        static let accentTeal       = SwiftUI.Color(hex: "#4DD0E1")
+        static let accentGreen      = SwiftUI.Color(hex: "#69F0AE")
+        static let accentIndigo     = SwiftUI.Color(hex: "#7C8BFF")
+
         static let danger           = SwiftUI.Color(hex: "#FF4D6A")
         static let success          = SwiftUI.Color(hex: "#3DFFD0")
     }
