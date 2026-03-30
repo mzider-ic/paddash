@@ -6,6 +6,7 @@ enum HomeKitWidgetType: String, CaseIterable, Identifiable {
     case lightDimmer
     case thermostat
     case humidity
+    case garageDoor
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum HomeKitWidgetType: String, CaseIterable, Identifiable {
         case .lightDimmer: return "Light Dimmer"
         case .thermostat:  return "Thermostat"
         case .humidity:    return "Humidity"
+        case .garageDoor: return "Garage Door"
         }
     }
 
@@ -22,6 +24,7 @@ enum HomeKitWidgetType: String, CaseIterable, Identifiable {
         case .lightDimmer: return "lightbulb.fill"
         case .thermostat:  return "thermometer.medium"
         case .humidity:    return "humidity.fill"
+        case .garageDoor: return "door.garage.closed"
         }
     }
 
@@ -30,6 +33,7 @@ enum HomeKitWidgetType: String, CaseIterable, Identifiable {
         case .lightDimmer: return "Control brightness and power for a light"
         case .thermostat:  return "View and set temperature for a thermostat"
         case .humidity:    return "View humidity across all sensors in your home"
+        case .garageDoor: return "Open, close, and monitor a garage door"
         }
     }
 
@@ -38,13 +42,14 @@ enum HomeKitWidgetType: String, CaseIterable, Identifiable {
         case .lightDimmer: return DS.Color.accentAmber
         case .thermostat:  return DS.Color.accentBlue
         case .humidity:    return DS.Color.accentMint
+        case .garageDoor: return DS.Color.danger
         }
     }
 
     /// Whether this widget type requires selecting a specific accessory
     var requiresAccessorySelection: Bool {
         switch self {
-        case .lightDimmer, .thermostat: return true
+        case .lightDimmer, .thermostat, .garageDoor: return true
         case .humidity: return false
         }
     }
@@ -57,6 +62,7 @@ struct HomeKitWidget: Identifiable {
     let type: HomeKitWidgetType
     var light: LightAccessory
     var thermostat: ThermostatAccessory?
+    var garageDoor: GarageDoorAccessory?
     var customName: String?  // Local-only rename
 
     /// Display name: custom name if set, otherwise the accessory name
@@ -66,6 +72,7 @@ struct HomeKitWidget: Identifiable {
         case .lightDimmer: return light.name
         case .thermostat:  return thermostat?.name ?? "Thermostat"
         case .humidity:    return "Humidity"
+        case .garageDoor:  return garageDoor?.name ?? "Garage Door"
         }
     }
 
@@ -74,6 +81,7 @@ struct HomeKitWidget: Identifiable {
         case .lightDimmer: return light.roomName
         case .thermostat:  return thermostat?.roomName ?? ""
         case .humidity:    return ""
+        case .garageDoor:  return garageDoor?.roomName ?? ""
         }
     }
 
@@ -83,6 +91,7 @@ struct HomeKitWidget: Identifiable {
         case .lightDimmer: return light.id.uuidString
         case .thermostat:  return thermostat?.id.uuidString ?? ""
         case .humidity:    return "humidity"
+        case .garageDoor:  return garageDoor?.id.uuidString ?? ""
         }
     }
 }

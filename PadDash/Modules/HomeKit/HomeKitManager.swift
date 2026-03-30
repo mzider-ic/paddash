@@ -1,5 +1,6 @@
 import SwiftUI
 import HomeKit
+import Combine
 
 // MARK: - HomeKit Manager
 
@@ -12,6 +13,7 @@ final class HomeKitManager: NSObject, ObservableObject {
     @Published var availableLights: [LightAccessory] = []
     @Published var availableThermostats: [ThermostatAccessory] = []
     @Published var availableHumiditySensors: [HumiditySensor] = []
+    @Published var availableGarageDoors: [GarageDoorAccessory] = []
     @Published var widgets: [HomeKitWidget] = []
     @Published var statusMessage: String?
     @Published var isLoading = true
@@ -27,10 +29,30 @@ final class HomeKitManager: NSObject, ObservableObject {
 
     let homeManager = HMHomeManager()
     private let store = DashboardStore.shared
+    private var humidityRefreshTimer: AnyCancellable?
 
     override init() {
         super.init()
         homeManager.delegate = self
+        startHumidityRefreshTimer()
+    }
+
+    // MARK: - Humidity Polling
+
+    /// Periodically re-reads humidity values. HomePods and some sensors
+    /// don't reliably push characteristic notifications, so polling keeps
+    /// the displayed values current.
+    private func startHumidityRefreshTimer() {
+        humidityRefreshTimer = Timer.publish(every: 30, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    for sensor in self.availableHumiditySensors {
+                        self.refreshHumidityValues(for: sensor)
+                    }
+                }
+            }
     }
 
     // MARK: - Persistence
@@ -53,7 +75,9 @@ final class HomeKitManager: NSObject, ObservableObject {
     func restoreSelectedHome() {
         guard let savedID = store.loadSelectedHomeID() else { return }
         selectedHome = homes.first { $0.uniqueIdentifier == savedID }
-        dumpAllCharacteristics(for: selectedHome!)
+        if let home = selectedHome {
+            dumpAllCharacteristics(for: home)
+        }
     }
 
     func restoreWidgets() {
@@ -82,6 +106,14 @@ final class HomeKitManager: NSObject, ObservableObject {
                 var widget = HomeKitWidget(id: widgetID, type: widgetType, light: LightAccessory.placeholder)
                 widget.customName = entry.customName
                 restored.append(widget)
+
+            case .garageDoor:
+                guard let garageDoorID = UUID(uuidString: entry.referenceID),
+                      let garageDoor = availableGarageDoors.first(where: { $0.id == garageDoorID }) else { continue }
+                var widget = HomeKitWidget(id: widgetID, type: widgetType, light: LightAccessory.placeholder)
+                widget.garageDoor = garageDoor
+                widget.customName = entry.customName
+                restored.append(widget)
             }
         }
         widgets = restored
@@ -102,6 +134,7 @@ final class HomeKitManager: NSObject, ObservableObject {
             availableLights = []
             availableThermostats = []
             availableHumiditySensors = []
+            availableGarageDoors = []
             statusMessage = "No HomeKit home selected."
             isLoading = false
             return
@@ -110,6 +143,7 @@ final class HomeKitManager: NSObject, ObservableObject {
         var discoveredLights: [LightAccessory] = []
         var discoveredThermostats: [ThermostatAccessory] = []
         var discoveredHumidity: [HumiditySensor] = []
+        var discoveredGarageDoors: [GarageDoorAccessory] = []
 
         for accessory in home.accessories {
             accessory.delegate = self
@@ -153,16 +187,9 @@ final class HomeKitManager: NSObject, ObservableObject {
 
             // Discover ANY service that exposes humidity (covers dedicated sensors, thermostats, HomePods, etc.)
             for service in accessory.services {
-                
                 let hasHumidity = service.characteristics.contains {
                     $0.characteristicType == HMCharacteristicTypeCurrentRelativeHumidity
                 }
-                print(
-                    "Service Name = \(service.name) : " +
-                    service.characteristics
-                        .map(\.characteristicTypeName)
-                        .joined(separator: ", ")
-                )
                 guard hasHumidity else { continue }
                 
                 // Avoid duplicate entries when the same accessory exposes humidity on multiple services
@@ -178,6 +205,24 @@ final class HomeKitManager: NSObject, ObservableObject {
                     humidity: 0
                 )
                 discoveredHumidity.append(sensor)
+                for characteristic in service.characteristics {
+                    characteristic.enableNotification(true) { _ in }
+                }
+            }
+
+            // Discover garage door opener services
+            for service in accessory.services where service.serviceType == HMServiceTypeGarageDoorOpener {
+                let garageDoor = GarageDoorAccessory(
+                    id: service.uniqueIdentifier,
+                    accessory: accessory,
+                    service: service,
+                    name: service.name,
+                    roomName: accessory.room?.name ?? "Default Room",
+                    currentState: .closed,
+                    targetState: .closed,
+                    obstructionDetected: false
+                )
+                discoveredGarageDoors.append(garageDoor)
                 for characteristic in service.characteristics {
                     characteristic.enableNotification(true) { _ in }
                 }
@@ -214,8 +259,9 @@ final class HomeKitManager: NSObject, ObservableObject {
         availableLights = discoveredLights
         availableThermostats = discoveredThermostats
         availableHumiditySensors = discoveredHumidity
+        availableGarageDoors = discoveredGarageDoors
 
-        let totalAccessories = discoveredLights.count + discoveredThermostats.count + discoveredHumidity.count
+        let totalAccessories = discoveredLights.count + discoveredThermostats.count + discoveredHumidity.count + discoveredGarageDoors.count
         statusMessage = totalAccessories == 0 ? "No compatible accessories found in \(home.name)." : nil
         isLoading = false
 
@@ -227,6 +273,9 @@ final class HomeKitManager: NSObject, ObservableObject {
         }
         for sensor in discoveredHumidity {
             refreshHumidityValues(for: sensor)
+        }
+        for garageDoor in discoveredGarageDoors {
+            refreshGarageDoorValues(for: garageDoor)
         }
 
         refreshWidgetAccessories()
@@ -251,6 +300,11 @@ final class HomeKitManager: NSObject, ObservableObject {
                 }
             case .humidity:
                 break // Humidity widget reads from availableHumiditySensors directly
+            case .garageDoor:
+                if let garageDoor = widget.garageDoor,
+                   let fresh = availableGarageDoors.first(where: { $0.id == garageDoor.id }) {
+                    widgets[widgetIndex].garageDoor = fresh
+                }
             }
         }
     }
@@ -289,6 +343,16 @@ final class HomeKitManager: NSObject, ObservableObject {
         guard let type = pendingWidgetType else { return }
         var widget = HomeKitWidget(id: UUID(), type: type, light: LightAccessory.placeholder)
         widget.thermostat = thermostat
+        widgets.append(widget)
+        showAccessoryPicker = false
+        pendingWidgetType = nil
+        saveState()
+    }
+
+    func addGarageDoorWidget(for garageDoor: GarageDoorAccessory) {
+        guard let type = pendingWidgetType else { return }
+        var widget = HomeKitWidget(id: UUID(), type: type, light: LightAccessory.placeholder)
+        widget.garageDoor = garageDoor
         widgets.append(widget)
         showAccessoryPicker = false
         pendingWidgetType = nil
@@ -353,6 +417,15 @@ final class HomeKitManager: NSObject, ObservableObject {
         return availableThermostats.filter { !widgetServiceIDs.contains($0.service.uniqueIdentifier) }
     }
 
+    /// Garage doors that haven't been added as widgets yet
+    var unaddedGarageDoors: [GarageDoorAccessory] {
+        let widgetServiceIDs = Set(widgets.compactMap { widget -> UUID? in
+            guard widget.type == .garageDoor else { return nil }
+            return widget.garageDoor?.service.uniqueIdentifier
+        })
+        return availableGarageDoors.filter { !widgetServiceIDs.contains($0.service.uniqueIdentifier) }
+    }
+
     /// Unadded lights grouped by room, each group sorted alphabetically
     var unaddedLightsGroupedByRoom: [(room: String, lights: [LightAccessory])] {
         let lights = unaddedLights
@@ -379,14 +452,25 @@ final class HomeKitManager: NSObject, ObservableObject {
     // MARK: - Read Light Values
 
     func refreshLightValues(for light: LightAccessory) {
-        light.powerCharacteristic?.readValue { [weak self] _ in
-            Task { @MainActor in
-                self?.updateLocalState(for: light)
+        if light.isGroup {
+            // Read from all services in the group, then re-aggregate
+            for characteristic in light.allPowerCharacteristics + light.allBrightnessCharacteristics {
+                characteristic.readValue { [weak self] _ in
+                    Task { @MainActor in
+                        self?.updateGroupState(for: light)
+                    }
+                }
             }
-        }
-        light.brightnessCharacteristic?.readValue { [weak self] _ in
-            Task { @MainActor in
-                self?.updateLocalState(for: light)
+        } else {
+            light.powerCharacteristic?.readValue { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateLocalState(for: light)
+                }
+            }
+            light.brightnessCharacteristic?.readValue { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateLocalState(for: light)
+                }
             }
         }
     }
@@ -410,19 +494,61 @@ final class HomeKitManager: NSObject, ObservableObject {
     }
 
     func updateWidgetState(for light: LightAccessory) {
+        // Groups use updateGroupState for widget propagation
+        guard !light.isGroup else { return }
         guard let lightServiceID = light.service?.uniqueIdentifier else { return }
         for (index, widget) in widgets.enumerated() {
             guard widget.type == .lightDimmer else { continue }
             if widget.light.service?.uniqueIdentifier == lightServiceID {
                 if let power = light.powerCharacteristic?.value as? Bool {
                     widgets[index].light.isOn = power
-                    widgets[index].light.isStale = false
                 }
                 if let brightness = light.brightnessCharacteristic?.value as? Int {
                     widgets[index].light.brightness = brightness
-                    widgets[index].light.isStale = false
                 }
+                widgets[index].light.isStale = false
             }
+        }
+    }
+
+    /// Aggregate power/brightness across all services in a grouped light,
+    /// filtering out unreachable accessories.
+    func updateGroupState(for light: LightAccessory) {
+        guard light.isGroup,
+              let index = availableLights.firstIndex(where: { $0.id == light.id })
+        else { return }
+
+        let services = light.groupServices
+        let reachableServices = services.filter { $0.accessory?.isReachable == true }
+
+        if reachableServices.isEmpty {
+            availableLights[index].isOn = false
+            availableLights[index].brightness = 0
+        } else {
+            let anyOn = reachableServices.contains { service in
+                service.characteristics
+                    .first { $0.characteristicType == HMCharacteristicTypePowerState }?
+                    .value as? Bool ?? false
+            }
+            availableLights[index].isOn = anyOn
+
+            let brightnessValues: [Int] = reachableServices.compactMap { service in
+                service.characteristics
+                    .first { $0.characteristicType == HMCharacteristicTypeBrightness }?
+                    .value as? Int
+            }
+            if !brightnessValues.isEmpty {
+                availableLights[index].brightness = brightnessValues.reduce(0, +) / brightnessValues.count
+            }
+        }
+        availableLights[index].isStale = false
+
+        // Propagate to widgets — match by light ID for groups
+        for (wIndex, widget) in widgets.enumerated() {
+            guard widget.type == .lightDimmer, widget.light.id == light.id else { continue }
+            widgets[wIndex].light.isOn = availableLights[index].isOn
+            widgets[wIndex].light.brightness = availableLights[index].brightness
+            widgets[wIndex].light.isStale = false
         }
     }
 
@@ -489,6 +615,69 @@ final class HomeKitManager: NSObject, ObservableObject {
             }
             availableHumiditySensors[index].isStale = false
         }
+    }
+
+    // MARK: - Read Garage Door Values
+
+    func refreshGarageDoorValues(for garageDoor: GarageDoorAccessory) {
+        garageDoor.currentDoorStateCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateGarageDoorState(for: garageDoor) }
+        }
+        garageDoor.targetDoorStateCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateGarageDoorState(for: garageDoor) }
+        }
+        garageDoor.obstructionDetectedCharacteristic?.readValue { [weak self] _ in
+            Task { @MainActor in self?.updateGarageDoorState(for: garageDoor) }
+        }
+    }
+
+    func updateGarageDoorState(for garageDoor: GarageDoorAccessory) {
+        if let index = availableGarageDoors.firstIndex(where: { $0.id == garageDoor.id }) {
+            if let state = garageDoor.currentDoorStateCharacteristic?.value as? Int {
+                availableGarageDoors[index].currentState = GarageDoorState(rawValue: state) ?? .closed
+            }
+            if let target = garageDoor.targetDoorStateCharacteristic?.value as? Int {
+                availableGarageDoors[index].targetState = GarageDoorTargetState(rawValue: target) ?? .closed
+            }
+            if let obstruction = garageDoor.obstructionDetectedCharacteristic?.value as? Bool {
+                availableGarageDoors[index].obstructionDetected = obstruction
+            }
+            availableGarageDoors[index].isStale = false
+
+            // Propagate to widgets
+            for (wIndex, widget) in widgets.enumerated() {
+                if widget.type == .garageDoor, widget.garageDoor?.id == garageDoor.id {
+                    widgets[wIndex].garageDoor = availableGarageDoors[index]
+                }
+            }
+        }
+    }
+
+    // MARK: - Garage Door Controls
+
+    func toggleGarageDoor(for garageDoor: GarageDoorAccessory) {
+        guard let characteristic = garageDoor.targetDoorStateCharacteristic else { return }
+
+        // Toggle: if currently open/opening -> close; if closed/closing/stopped -> open
+        let newTarget: GarageDoorTargetState
+        switch garageDoor.currentState {
+        case .open, .opening:
+            newTarget = .closed
+        case .closed, .closing, .stopped:
+            newTarget = .open
+        }
+
+        // Optimistic local update
+        if let index = availableGarageDoors.firstIndex(where: { $0.id == garageDoor.id }) {
+            availableGarageDoors[index].targetState = newTarget
+            for (wIndex, widget) in widgets.enumerated() {
+                if widget.type == .garageDoor, widget.garageDoor?.id == garageDoor.id {
+                    widgets[wIndex].garageDoor?.targetState = newTarget
+                }
+            }
+        }
+
+        characteristic.writeValue(newTarget.rawValue) { _ in }
     }
 
     // MARK: - Thermostat Controls
@@ -646,10 +835,10 @@ extension HMCharacteristic {
         case HMCharacteristicTypeContactState: return "HMCharacteristicTypeContactState"
 
         // --- Device Information ---
-        case HMCharacteristicTypeManufacturer: return "HMCharacteristicTypeManufacturer"
-        case HMCharacteristicTypeModel: return "HMCharacteristicTypeModel"
-        case HMCharacteristicTypeSerialNumber: return "HMCharacteristicTypeSerialNumber"
         case HMCharacteristicTypeVersion: return "HMCharacteristicTypeVersion"
+        case "00000020-0000-1000-8000-0026BB765291": return "Manufacturer"
+        case "00000021-0000-1000-8000-0026BB765291": return "Model"
+        case "00000030-0000-1000-8000-0026BB765291": return "SerialNumber"
 
         // --- Power and Status ---
         case HMCharacteristicTypeBatteryLevel: return "HMCharacteristicTypeBatteryLevel"

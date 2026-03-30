@@ -414,10 +414,42 @@ struct ExpandedPlayerView: View {
                 }
             }
 
+            // Shuffle & Repeat controls
+            HStack(spacing: DS.Space.xl) {
+                Button { manager.toggleShuffle() } label: {
+                    Image(systemName: "shuffle")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(manager.shuffleMode == .songs ? accent : DS.Color.textTertiary)
+                        .frame(width: 44, height: 44)
+                        .background(manager.shuffleMode == .songs ? accent.opacity(0.15) : Color.clear)
+                        .clipShape(Circle())
+                }
+
+                Button { manager.cycleRepeatMode() } label: {
+                    Image(systemName: repeatIconName)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(manager.repeatMode != .none ? accent : DS.Color.textTertiary)
+                        .frame(width: 44, height: 44)
+                        .background(manager.repeatMode != .none ? accent.opacity(0.15) : Color.clear)
+                        .clipShape(Circle())
+                }
+            }
+
             Spacer()
         }
         .padding(DS.Space.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var repeatIconName: String {
+        switch manager.repeatMode {
+        case .one:
+            return "repeat.1"
+        case .all:
+            return "repeat"
+        default:
+            return "repeat"
+        }
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

@@ -19,7 +19,7 @@ struct HomeKitDashboardView: View {
             Group {
                 if manager.isLoading {
                     loadingView
-                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty && manager.availableThermostats.isEmpty {
+                } else if manager.widgets.isEmpty && manager.availableLights.isEmpty && manager.availableThermostats.isEmpty && manager.availableGarageDoors.isEmpty {
                     if let message = manager.statusMessage {
                         emptyStateView(message: message)
                     } else {
@@ -231,6 +231,12 @@ struct HomeKitDashboardView: View {
             )
         case .humidity:
             HumidityCard(
+                widget: widget,
+                manager: manager,
+                onRemove: { manager.removeWidget(widget) }
+            )
+        case .garageDoor:
+            GarageDoorCard(
                 widget: widget,
                 manager: manager,
                 onRemove: { manager.removeWidget(widget) }
@@ -803,6 +809,10 @@ struct AccessoryPickerSheet: View {
         manager.pendingWidgetType == .thermostat
     }
 
+    private var isPickingGarageDoor: Bool {
+        manager.pendingWidgetType == .garageDoor
+    }
+
     // Light filtering
     private var filteredLightGroups: [(room: String, lights: [LightAccessory])] {
         let groups = manager.unaddedLightsGroupedByRoom
@@ -826,12 +836,26 @@ struct AccessoryPickerSheet: View {
         }
     }
 
+    // Garage door filtering
+    private var filteredGarageDoors: [GarageDoorAccessory] {
+        let list = manager.unaddedGarageDoors
+        guard !searchText.isEmpty else { return list }
+        return list.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.roomName.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
     private var hasResults: Bool {
-        isPickingThermostat ? !filteredThermostats.isEmpty : !filteredLightGroups.isEmpty
+        if isPickingGarageDoor { return !filteredGarageDoors.isEmpty }
+        if isPickingThermostat { return !filteredThermostats.isEmpty }
+        return !filteredLightGroups.isEmpty
     }
 
     private var isEmpty: Bool {
-        isPickingThermostat ? manager.unaddedThermostats.isEmpty : manager.unaddedLights.isEmpty
+        if isPickingGarageDoor { return manager.unaddedGarageDoors.isEmpty }
+        if isPickingThermostat { return manager.unaddedThermostats.isEmpty }
+        return manager.unaddedLights.isEmpty
     }
 
     var body: some View {
@@ -842,15 +866,13 @@ struct AccessoryPickerSheet: View {
                 if isEmpty {
                     VStack(spacing: DS.Space.md) {
                         Spacer()
-                        Image(systemName: isPickingThermostat ? "thermometer.medium.slash" : "lightbulb.slash")
+                        Image(systemName: emptyStateIcon)
                             .font(.system(size: 48, weight: .thin))
                             .foregroundColor(DS.Color.accentAmber.opacity(0.5))
-                        Text(isPickingThermostat ? "No Available Thermostats" : "No Available Lights")
+                        Text(emptyStateTitle)
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .foregroundColor(DS.Color.textPrimary)
-                        Text(isPickingThermostat
-                             ? "No thermostats were found in this home, or all have been added."
-                             : "All discovered lights have already been added as widgets, or no lights were found in this home.")
+                        Text(emptyStateMessage)
                             .font(.system(size: 14, weight: .regular, design: .rounded))
                             .foregroundColor(DS.Color.textSecondary)
                             .multilineTextAlignment(.center)
@@ -887,7 +909,9 @@ struct AccessoryPickerSheet: View {
 
                         if hasResults {
                             ScrollView {
-                                if isPickingThermostat {
+                                if isPickingGarageDoor {
+                                    garageDoorList
+                                } else if isPickingThermostat {
                                     thermostatList
                                 } else {
                                     lightList
@@ -909,7 +933,7 @@ struct AccessoryPickerSheet: View {
                     }
                 }
             }
-            .navigationTitle(isPickingThermostat ? "Choose a Thermostat" : "Choose a Light")
+            .navigationTitle(pickerTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -963,6 +987,54 @@ struct AccessoryPickerSheet: View {
         }
         .padding(.horizontal, DS.Space.lg)
         .padding(.bottom, DS.Space.xl)
+    }
+
+    // MARK: - Garage Door List
+
+    private var garageDoorList: some View {
+        LazyVStack(spacing: DS.Space.md) {
+            ForEach(filteredGarageDoors) { garageDoor in
+                Button {
+                    withAnimation(DS.Animation.snappy) {
+                        manager.addGarageDoorWidget(for: garageDoor)
+                    }
+                } label: {
+                    accessoryRow(name: garageDoor.name, room: garageDoor.roomName, icon: "door.garage.closed", isGroup: false, accent: DS.Color.danger)
+                }
+            }
+        }
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.bottom, DS.Space.xl)
+    }
+
+    // MARK: - Picker Helpers
+
+    private var pickerTitle: String {
+        if isPickingGarageDoor { return "Choose a Garage Door" }
+        if isPickingThermostat { return "Choose a Thermostat" }
+        return "Choose a Light"
+    }
+
+    private var emptyStateIcon: String {
+        if isPickingGarageDoor { return "door.garage.closed" }
+        if isPickingThermostat { return "thermometer.medium.slash" }
+        return "lightbulb.slash"
+    }
+
+    private var emptyStateTitle: String {
+        if isPickingGarageDoor { return "No Available Garage Doors" }
+        if isPickingThermostat { return "No Available Thermostats" }
+        return "No Available Lights"
+    }
+
+    private var emptyStateMessage: String {
+        if isPickingGarageDoor {
+            return "No garage doors were found in this home, or all have been added."
+        }
+        if isPickingThermostat {
+            return "No thermostats were found in this home, or all have been added."
+        }
+        return "All discovered lights have already been added as widgets, or no lights were found in this home."
     }
 
     // MARK: - Shared Components

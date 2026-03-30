@@ -22,6 +22,10 @@ final class AirPlayManager: ObservableObject {
     @Published var totalDuration: TimeInterval = 0
     @Published var activeWidgetID: UUID?
 
+    // Shuffle & repeat state
+    @Published var shuffleMode: MusicPlayer.ShuffleMode = .off
+    @Published var repeatMode: MusicPlayer.RepeatMode = .none
+
     // Expanded view state
     @Published var expandedWidgetID: UUID?
 
@@ -147,18 +151,30 @@ final class AirPlayManager: ObservableObject {
             guard widgets.contains(where: { $0.id == widget.id }) else { return }
 
             do {
-                // Fetch the playlist from the user's library
+                // Fetch the playlist with its tracks from the user's library
                 var request = MusicLibraryRequest<Playlist>()
                 request.filter(matching: \.id, equalTo: widget.playlistID)
                 let response = try await request.response()
 
                 guard let playlist = response.items.first else { return }
 
-                player.queue = [playlist]
+                // Load the playlist's tracks so the queue is scoped to them
+                let detailedPlaylist = try await playlist.with([.tracks])
+                let tracks = detailedPlaylist.tracks ?? []
+                guard !tracks.isEmpty else { return }
+
+                // Set the queue to the playlist's tracks explicitly
+                player.queue = SystemMusicPlayer.Queue(for: tracks)
+
+                // Repeat the playlist so autoplay doesn't add unrelated songs
+                player.state.repeatMode = .all
+
                 try await player.play()
 
                 activeWidgetID = widget.id
                 isPlaying = true
+                shuffleMode = player.state.shuffleMode ?? .off
+                repeatMode = player.state.repeatMode ?? .none
                 startProgressTracking()
                 updateNowPlayingInfo()
             } catch {
@@ -203,6 +219,31 @@ final class AirPlayManager: ObservableObject {
         clearNowPlayingInfo()
     }
 
+    // MARK: - Shuffle & Repeat
+
+    func toggleShuffle() {
+        let newMode: MusicPlayer.ShuffleMode = (shuffleMode == .off) ? .songs : .off
+        player.state.shuffleMode = newMode
+        shuffleMode = newMode
+    }
+
+    /// Cycles: none → all → one → none
+    func cycleRepeatMode() {
+        let newMode: MusicPlayer.RepeatMode
+        switch repeatMode {
+        case .none:
+            newMode = .all
+        case .all:
+            newMode = .one
+        case .one:
+            newMode = .none
+        @unknown default:
+            newMode = .none
+        }
+        player.state.repeatMode = newMode
+        repeatMode = newMode
+    }
+
     // MARK: - Expanded State
 
     func expandWidget(_ widget: AirPlayWidget) {
@@ -245,7 +286,7 @@ final class AirPlayManager: ObservableObject {
     // MARK: - Player Observation
 
     private func setupObservers() {
-        // Observe player state changes (play/pause/stop)
+        // Observe player state changes (play/pause/stop, shuffle, repeat)
         stateObserver = player.state.objectWillChange.sink { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -256,6 +297,8 @@ final class AirPlayManager: ObservableObject {
                 } else {
                     self.stopProgressTracking()
                 }
+                self.shuffleMode = self.player.state.shuffleMode ?? .off
+                self.repeatMode = self.player.state.repeatMode ?? .none
                 self.updateNowPlayingInfo()
             }
         }
